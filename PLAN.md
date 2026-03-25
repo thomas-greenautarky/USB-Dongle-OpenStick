@@ -173,3 +173,50 @@ can use automatically.
 - [JZxx installation guide](https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2)
 - [Supported devices](https://deepwiki.com/kinsamanka/OpenStick-Builder/7.2-supported-devices)
 - [postmarketOS MSM8916](https://wiki.postmarketos.org/wiki/Qualcomm_Snapdragon_410/412_(MSM8916)) — kernel source
+
+## Phase 2 Findings: Board Identification
+
+### Confirmed Board Type
+
+| Property | Value |
+|---|---|
+| Board | **Juzhen (矩阵) UFI** |
+| OpenStick DTB | `msm8916-jz01-45-v33.dtb` |
+| lk2nd device | `lk2nd-msm8916` |
+| Build product | `msm8916_32_512` |
+| HWID | `0x007050e100000000` |
+| EDL Serial | `0x1f7ca289` |
+| CPU | MSM8916, unfused (any loader works) |
+| RAM | 512 MB |
+| eMMC | 3.7 GB (mmcblk0) |
+
+### Discovery: Juzhen Configuration Properties
+
+All dongle settings are stored as Android system properties (`persist.sys.juzhen.*`):
+
+```
+persist.sys.juzhen.type        = ufi          # device type
+persist.sys.juzhen.ssid.prefix = 4G-UFI-      # SSID prefix
+persist.sys.juzhen.ssid.suffix = 2            # digits from IMEI for SSID
+persist.sys.juzhen.ssid.pd     = 1234567890   # WiFi password
+persist.sys.juzhen.web.pd      = admin        # Web admin password
+persist.sys.juzhen.sncode      = 35158010517311  # serial number
+persist.sys.juzhen.sim.pd      = UFIadmin88888   # SIM management password
+persist.sys.juzhen.sn          = 1            # unknown
+```
+
+These properties might be writable via `adb shell setprop` — needs testing.
+If so, this provides a MUCH simpler way to change WiFi/web passwords on the
+stock Android firmware (no hostapd.conf editing, no HTTP API needed).
+
+### OpenStick Installation Method
+
+For JZxx boards, use the kinsamanka installation script:
+```bash
+# 1. Enter EDL mode (reset button + USB plug)
+# 2. Run:
+wget https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2/raw/start.sh
+bash start.sh
+```
+
+The script handles: bootloader (lk2nd) → partition table → kernel → Debian rootfs.
