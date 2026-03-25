@@ -1,0 +1,32 @@
+# Firmware dumps (large binary files)
+*.bin
+*.img
+*.mbn
+*.elf
+*.raw
+
+# Build output
+build/
+out/
+*.ext4
+
+# EDL tool artifacts
+edl_*
+firehose/
+
+# Credentials
+.env
+*.pem
+*.key
+id_rsa*
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
