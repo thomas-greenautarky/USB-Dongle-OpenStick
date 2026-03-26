@@ -220,3 +220,55 @@ bash start.sh
 ```
 
 The script handles: bootloader (lk2nd) → partition table → kernel → Debian rootfs.
+
+## Phase 3 Findings: Boot Chain Analysis
+
+### Critical Discovery: lk2nd Goes in BOOT, Not ABOOT
+
+The stock SBL1 expects an **ELF binary** in the aboot partition. lk2nd is packaged
+as an **Android boot image** (zImage). Placing lk2nd in aboot causes SBL1 to fail
+silently — no USB, no fastboot, nothing.
+
+**Correct approach:** Keep stock aboot (ELF), place lk2nd in the boot partition.
+Stock aboot loads lk2nd as a "kernel", then lk2nd provides fastboot and chainloads
+the real Linux kernel.
+
+### Board Identity (confirmed by lk2nd fastboot)
+
+```
+lk2nd:model       = JZ0145 v33 4G Modem Stick
+lk2nd:compatible  = xiaoxun,jz0145-v33
+lk2nd:version     = 22.0
+serialno          = e80fd820
+wifimacaddr       = 02:00:E8:0F:D8:20
+```
+
+### qhypstub Breaks the Boot Chain
+
+Replacing stock hyp with `qhypstub-test-signed.mbn` prevents SBL1 from booting
+entirely. Stock hyp must remain for the bootloader chain to work. This creates a
+potential conflict since mainline Linux may require qhypstub for proper SMP and
+memory management.
+
+### GPT Layout Constraints
+
+The stock SBL1 requires early partitions (modem through hyp) at their original
+sectors. A "hybrid GPT" was created that keeps stock layout for firmware partitions
+but replaces system/userdata/cache with a single rootfs partition.
+
+### Working Boot Sequence (proven)
+
+```
+1. Full stock restore → verify Android boots via ADB
+2. `adb reboot edl` → EDL mode (no button press needed)
+3. `edl w boot lk2nd-msm8916.img` → flash lk2nd to boot partition
+4. `edl reset` → lk2nd fastboot appears
+5. `fastboot oem reboot-edl` → back to EDL without button press
+```
+
+### Current Blocker
+
+`fastboot boot boot-ufi001c.img` (temporary kernel boot) crashes immediately.
+Likely causes: no rootfs partition (stock GPT, PARTUUID mismatch) and/or
+stock hyp incompatible with mainline kernel. Need to test with hybrid GPT
+(rootfs present) while keeping stock hyp.
