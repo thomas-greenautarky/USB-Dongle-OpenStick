@@ -4,13 +4,17 @@
 #
 # Connects via ADB and sets up:
 #   - Device-specific modem + WiFi firmware (from backup)
-#   - Device tree patch (JZ0145-v33)
-#   - Extlinux boot with correct DTB
+#   - Apt sources fix (Debian 11 bullseye is archived)
+#   - System clock (no RTC battery)
 #   - Root password + SSH access
 #   - Hostname + timezone
 #   - NAT gateway (USB → LTE)
 #   - WiFi hotspot (optional)
 #   - LTE APN (optional)
+#
+# NOTE: DTB patching / extlinux setup is no longer needed. The boot-jz0145.img
+# has the JZ0145-v33 DTB baked in. The extlinux approach broke boot because
+# the Dragonboard aboot's fastboot interface is unreachable from the host.
 #
 # Usage:
 #   bash configure-dongle.sh [options]
@@ -26,7 +30,7 @@
 #   --no-wifi             Skip WiFi hotspot setup
 #   --no-nat              Skip NAT gateway setup
 #   --no-firmware         Skip modem firmware copy
-#   --no-dtb              Skip DTB patching
+#   --no-apt-fix          Skip apt sources fix
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
@@ -52,7 +56,7 @@ TIMEZONE="UTC"
 SETUP_WIFI=true
 SETUP_NAT=true
 SETUP_FIRMWARE=true
-SETUP_DTB=true
+SETUP_APT_FIX=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -66,7 +70,7 @@ while [[ $# -gt 0 ]]; do
         --no-wifi)        SETUP_WIFI=false; shift ;;
         --no-nat)         SETUP_NAT=false; shift ;;
         --no-firmware)    SETUP_FIRMWARE=false; shift ;;
-        --no-dtb)         SETUP_DTB=false; shift ;;
+        --no-apt-fix)     SETUP_APT_FIX=false; shift ;;
         *)                err "Unknown option: $1" ;;
     esac
 done
@@ -124,62 +128,20 @@ if $SETUP_FIRMWARE; then
     fi
 fi
 
-# ─── Patch device tree for JZ0145-v33 ───────────────────────────────────────
+# ─── Fix apt sources (Debian 11 bullseye is archived) ────────────────────────
 
-if $SETUP_DTB; then
-    log "Patching device tree for JZ0145-v33..."
+if $SETUP_APT_FIX; then
+    log "Fixing apt sources (Debian 11 bullseye → archive.debian.org)..."
 
-    which dtc >/dev/null 2>&1 || err "dtc (device-tree-compiler) not installed on host"
-
-    # Extract running device tree
-    adb pull /sys/firmware/fdt /tmp/fdt 2>/dev/null
-
-    # Download JZ patch
-    PATCH_DTS="/tmp/patch.dts"
-    if [ ! -f "$PATCH_DTS" ]; then
-        wget -q -O "$PATCH_DTS" \
-            "https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2/raw/patch.dts" \
-            || err "Failed to download DTB patch"
-    fi
-
-    # Compile patched DTB
-    dtc -I dtb -O dts /tmp/fdt -o /tmp/default.dts 2>/dev/null
-    cat /tmp/default.dts "$PATCH_DTS" | dtc -I dts -O dts -o /tmp/jz01-45-v33.dts 2>/dev/null
-    dtc -I dts -O dtb /tmp/jz01-45-v33.dts -o /tmp/jz01-45-v33.dtb 2>/dev/null
-
-    # Push to device
-    adb push /tmp/jz01-45-v33.dtb /boot/
-    adb push /tmp/jz01-45-v33.dts /boot/
-
-    # Set up extlinux boot
-    PARTUUID=$(adb shell blkid /dev/mmcblk0p13 2>/dev/null | grep -oP 'PARTUUID="\K[^"]+')
-    [ -n "$PARTUUID" ] || PARTUUID="a7ab80e8-e9d1-e8cd-f157-93f69b1d141e"
-
-    adb shell "
-        mkfs.ext2 -F /dev/disk/by-partlabel/boot 2>/dev/null
-        mount /dev/disk/by-partlabel/boot /mnt
-
-        mkdir -p /mnt/extlinux
-        cat > /mnt/extlinux/extlinux.conf << EXTEOF
-linux /vmlinuz
-initrd /initrd.img
-fdt /default.dtb
-append earlycon root=PARTUUID=${PARTUUID} console=ttyMSM0,115200 no_framebuffer=true rw rootwait
-EXTEOF
-
-        cp /boot/vmlinuz-* /mnt/vmlinuz
-        cp /boot/initrd.img-* /mnt/initrd.img
-        cp /boot/jz01-45-v33.dtb /mnt/
-        ln -sf jz01-45-v33.dtb /mnt/default.dtb
-
-        grep -q 'by-partlabel/boot' /etc/fstab || \
-            echo '/dev/disk/by-partlabel/boot /boot ext2 defaults 0 0' >> /etc/fstab
-
-        umount /mnt
-        echo 'Extlinux boot configured'
-    "
-
-    rm -f /tmp/fdt /tmp/default.dts /tmp/jz01-45-v33.dts /tmp/jz01-45-v33.dtb
+    adb shell '
+        if grep -q "deb.debian.org" /etc/apt/sources.list 2>/dev/null; then
+            sed -i "s|deb.debian.org|archive.debian.org|g" /etc/apt/sources.list
+            sed -i "/security.debian.org/d" /etc/apt/sources.list
+            echo "apt sources updated to archive.debian.org"
+        else
+            echo "apt sources already fixed or not using deb.debian.org"
+        fi
+    '
 fi
 
 # ─── Configure hostname ─────────────────────────────────────────────────────

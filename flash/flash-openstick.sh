@@ -4,19 +4,26 @@
 #
 # Prerequisites:
 #   - edl tool installed: pip install edl (or pipx install edlclient)
-#   - fastboot installed: apt install fastboot
-#   - adb installed: apt install adb
-#   - Device connected and visible via ADB (stock Android running)
+#   - adb installed: apt install adb (for entering EDL from stock Android)
+#   - Device in EDL mode (reset button + USB plug, or adb reboot edl)
 #   - All required files in the flash/files/ directory
 #
 # Usage:
 #   cd flash && bash flash-openstick.sh
 #
-# This script follows the proven flash sequence for JZ02/JZ0145-v33 boards:
-#   1. Stock aboot loads Dragonboard aboot via EDL
-#   2. Dragonboard aboot provides fastboot
-#   3. Fastboot flashes new GPT + Dragonboard firmware + OpenStick boot/rootfs
-#   4. Modem calibration data restored from backup
+# This script uses the proven EDL-only flash method for JZ02/JZ0145-v33 boards.
+# No fastboot is needed — the Dragonboard aboot's fastboot interface (USB ID
+# 18d1:d001 / 05c6:9091) is unreliable and cannot be reached by the host
+# fastboot tool.
+#
+# Flash sequence:
+#   1. Enter EDL mode (reset button + USB plug, or adb reboot edl)
+#   2. Write split GPT (primary at sector 0, backup at end of disk)
+#   3. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
+#   4. Flash boot-jz0145.img (kernel with JZ0145-v33 DTB baked in)
+#   5. Flash rootfs.raw (Debian)
+#   6. Restore modem calibration from backup (sec, fsc, fsg, modemst1, modemst2)
+#   7. Reset → Debian boots
 #
 # IMPORTANT: A full backup must exist in ../backup/partitions/ before running.
 
@@ -24,17 +31,21 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILES_DIR="$SCRIPT_DIR/files"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
 
+# Backup GPT sector for 4GB eMMC (end of disk)
+BACKUP_GPT_SECTOR=7733215
+
 # Required flash files
 REQUIRED_FILES=(
     "$FILES_DIR/emmc_appsboot-test-signed.mbn"
-    "$FILES_DIR/gpt_both0.bin"
+    "$FILES_DIR/gpt_primary_proper.bin"
+    "$FILES_DIR/gpt_backup_proper.bin"
     "$FILES_DIR/sbl1.mbn"
     "$FILES_DIR/rpm.mbn"
     "$FILES_DIR/tz.mbn"
     "$FILES_DIR/qhypstub-test-signed.mbn"
     "$FILES_DIR/sbc_1.0_8016.bin"
-    "$FILES_DIR/boot-ufi001c.img"
-    "$FILES_DIR/rootfs.img"
+    "$FILES_DIR/boot-jz0145.img"
+    "$FILES_DIR/rootfs.raw"
 )
 
 # Required backup files (modem calibration)
@@ -67,18 +78,17 @@ done
 log "All files present."
 
 which edl >/dev/null 2>&1   || err "edl not found. Install: pipx install edlclient"
-which fastboot >/dev/null 2>&1 || err "fastboot not found. Install: apt install fastboot"
-which adb >/dev/null 2>&1   || err "adb not found. Install: apt install adb"
+which adb >/dev/null 2>&1   || warn "adb not found (optional, for entering EDL from stock Android)"
 
 # ─── Step 1: Enter EDL mode ─────────────────────────────────────────────────
 
 log "Checking device state..."
-if adb devices 2>/dev/null | grep -q "device$"; then
+if lsusb 2>/dev/null | grep -q "05c6:9008"; then
+    log "Device already in EDL mode."
+elif which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
     log "Device in ADB mode — rebooting to EDL..."
     adb reboot edl
     sleep 5
-elif lsusb 2>/dev/null | grep -q "05c6:9008"; then
-    log "Device already in EDL mode."
 else
     warn "Device not detected. Please enter EDL mode manually:"
     warn "  1. Unplug the dongle"
@@ -99,75 +109,70 @@ done
 lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found after 60s"
 log "EDL device detected."
 
-# ─── Step 2: Flash Dragonboard aboot + erase boot via EDL ───────────────────
+# ─── Step 2: Write split GPT via EDL ────────────────────────────────────────
+# The GPT must be written as two separate files:
+#   - gpt_primary_proper.bin at sector 0
+#   - gpt_backup_proper.bin at the end of disk
+#
+# The original gpt_both0.bin has bugs: rootfs is 1MB placeholder, backup GPT
+# at wrong sector via EDL. The proper files have correct rootfs (3.6GB),
+# correct alternate_lba, and correct backup header.
 
-log "Flashing Dragonboard aboot to aboot partition..."
-edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn" 2>&1 | tail -1
+log "Writing primary GPT (sector 0)..."
+edl ws 0 "$FILES_DIR/gpt_primary_proper.bin"
 
-log "Erasing boot partition (forces fastboot on next boot)..."
-edl e boot 2>&1 | tail -3
+log "Writing backup GPT (sector $BACKUP_GPT_SECTOR)..."
+edl ws "$BACKUP_GPT_SECTOR" "$FILES_DIR/gpt_backup_proper.bin"
+
+# ─── Step 3: Flash Dragonboard firmware via EDL ─────────────────────────────
+
+log "Flashing Dragonboard firmware..."
+edl w sbl1  "$FILES_DIR/sbl1.mbn"
+edl w rpm   "$FILES_DIR/rpm.mbn"
+edl w tz    "$FILES_DIR/tz.mbn"
+edl w hyp   "$FILES_DIR/qhypstub-test-signed.mbn"
+edl w cdt   "$FILES_DIR/sbc_1.0_8016.bin"
+edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
+
+# ─── Step 4: Flash boot image + rootfs via EDL ──────────────────────────────
+
+log "Flashing boot image (boot-jz0145.img with JZ0145-v33 DTB)..."
+edl w boot "$FILES_DIR/boot-jz0145.img"
+
+log "Flashing Debian rootfs (this takes 2-5 minutes)..."
+edl w rootfs "$FILES_DIR/rootfs.raw"
+
+# ─── Step 5: Restore modem calibration data via EDL ─────────────────────────
+
+log "Restoring modem calibration data from backup..."
+edl w sec      "$BACKUP_DIR/sec.bin"
+edl w fsc      "$BACKUP_DIR/fsc.bin"
+edl w fsg      "$BACKUP_DIR/fsg.bin"
+edl w modemst1 "$BACKUP_DIR/modemst1.bin"
+edl w modemst2 "$BACKUP_DIR/modemst2.bin"
+
+# ─── Step 6: Reset and verify ───────────────────────────────────────────────
 
 log "Resetting device..."
 edl reset 2>&1 | tail -1 || true
-sleep 2
-
-# ─── Step 3: Wait for fastboot ──────────────────────────────────────────────
-
-log "Waiting for fastboot..."
-for i in $(seq 1 30); do
-    fastboot devices 2>/dev/null | grep -q "fastboot" && break
-    sleep 2
-done
-fastboot devices 2>/dev/null | grep -q "fastboot" || err "Fastboot not found after 60s"
-log "Fastboot connected: $(fastboot devices 2>/dev/null | head -1)"
-
-# ─── Step 4: Flash everything via fastboot ───────────────────────────────────
-
-log "Flashing partition table..."
-fastboot flash partition "$FILES_DIR/gpt_both0.bin"
-
-log "Flashing Dragonboard firmware..."
-fastboot flash aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
-fastboot flash hyp   "$FILES_DIR/qhypstub-test-signed.mbn"
-fastboot flash rpm   "$FILES_DIR/rpm.mbn"
-fastboot flash sbl1  "$FILES_DIR/sbl1.mbn"
-fastboot flash tz    "$FILES_DIR/tz.mbn"
-fastboot flash cdt   "$FILES_DIR/sbc_1.0_8016.bin"
-
-log "Flashing OpenStick boot image..."
-fastboot flash boot  "$FILES_DIR/boot-ufi001c.img"
-
-log "Flashing Debian rootfs (this takes 2-5 minutes)..."
-fastboot flash rootfs "$FILES_DIR/rootfs.img"
-
-# ─── Step 5: Restore modem calibration data ──────────────────────────────────
-
-log "Restoring modem calibration data from backup..."
-fastboot flash sec      "$BACKUP_DIR/sec.bin"
-fastboot flash fsc      "$BACKUP_DIR/fsc.bin"
-fastboot flash fsg      "$BACKUP_DIR/fsg.bin"
-fastboot flash modemst1 "$BACKUP_DIR/modemst1.bin"
-fastboot flash modemst2 "$BACKUP_DIR/modemst2.bin"
-
-# ─── Step 6: Reboot ─────────────────────────────────────────────────────────
-
-log "Rebooting..."
-fastboot reboot
 
 log "Waiting for device to boot (30s)..."
 sleep 30
 
 # Check if ADB appears
-if adb devices 2>/dev/null | grep -q "device$"; then
+if which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
     log "Device booted! ADB connected."
     echo ""
     adb shell uname -a
     adb shell cat /etc/os-release | head -3
     echo ""
     log "OpenStick flash complete!"
-    log "Default root password needs to be set. Run configure-dongle.sh next."
+    log "Run configure-dongle.sh next to set up modem firmware, SSH, NAT, etc."
 else
     warn "ADB not detected after 30s. The device may need more time to boot."
     warn "Check: lsusb | grep 05c6"
     warn "       adb devices"
+    warn ""
+    warn "If the device does not boot, re-enter EDL (reset button + USB plug)"
+    warn "and try again. EDL mode is always available for recovery."
 fi

@@ -33,18 +33,19 @@ automated APN configuration.
 ```bash
 # Install tools
 pipx install edlclient     # Qualcomm EDL flash tool
-sudo apt install fastboot adb
+sudo apt install adb        # ADB for post-flash configuration
 ```
 
-### Flash OpenStick
+### Flash OpenStick (EDL-only method)
 
 ```bash
-# 1. Connect dongle running stock Android
+# 1. Enter EDL: hold reset button while plugging in USB
+#    (or from stock Android: adb reboot edl)
 # 2. Run the flash script:
 cd flash
 bash flash-openstick.sh
 
-# 3. Configure the dongle:
+# 3. After Debian boots, configure the dongle:
 bash configure-dongle.sh \
   --hostname my-dongle \
   --wifi-ssid "4G-Gateway" \
@@ -72,17 +73,17 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 
 - [ ] **Hardware watchdog**: needs boot grace period testing before deployment.
       The LTE modem takes 60-90s to register after boot. The connection watchdog
-      must skip checks during this window (currently set to 180s). The hardware
+      must skip checks during the first 180s (3 min) after boot. The hardware
       watchdog (`/dev/watchdog`) must not trigger during modem registration.
-      Caused a reboot loop in testing — do not enable until validated.
-- [ ] **Extlinux boot with JZ0145 DTB**: converting the boot partition to ext2
-      with extlinux.conf broke boot because the Dragonboard aboot's fastboot
-      interface uses USB ID `18d1:d001` which the host `fastboot` tool cannot
-      communicate with. Keep using Android boot image format for now.
-      Alternative: build a boot image with the JZ0145 DTB baked in.
-- [ ] **Build custom boot image**: embed `msm8916-jz01-45-v33.dtb` directly
-      in the Android boot image (like `boot-jz01.img` we created) instead of
-      relying on extlinux. This gives correct DTB without reformatting boot.
+      Caused a reboot loop in testing — do NOT install the watchdog package
+      until boot grace period is validated.
+      Connection watchdog must use `systemctl restart ModemManager` (NOT
+      `mmcli --disable/--enable`).
+- [ ] **SIM detection reliability**: SIM detection is intermittent on fresh rootfs.
+      With UFI001C DTB, SIM is often not detected. With JZ0145-v33 DTB (baked
+      into `boot-jz0145.img`), SIM is detected reliably. Sometimes requires a
+      physical replug. Once detected, modem connects to LTE automatically.
+- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA.
 
 ## What's Running
 
@@ -106,16 +107,25 @@ Understanding the boot chain was critical. This board requires a specific
 flash approach that differs from the standard OpenStick instructions:
 
 ```
-Stock SBL1 → Dragonboard aboot (fastboot) → Flash everything via fastboot
+EDL → Write GPT + Dragonboard firmware + kernel + rootfs directly to eMMC
                                               ↓
-Dragonboard SBL1 → qhypstub → Dragonboard aboot → OpenStick kernel → Debian
+Dragonboard SBL1 → qhypstub → Dragonboard aboot → boot-jz0145.img → Debian
 ```
 
 Key findings:
-- **lk2nd goes in BOOT, not ABOOT** — stock SBL1 expects ELF in aboot
+- **EDL-only flash works reliably** — no fastboot step needed
+- **Fastboot is unreliable on this board** — Dragonboard aboot exposes USB ID
+  `18d1:d001` / `05c6:9091`, which the host `fastboot` tool (v34.0.5) cannot
+  communicate with. ADB server also holds the USB device, blocking fastboot.
+- **GPT must be split into primary + backup** — `gpt_both0.bin` has wrong
+  rootfs size and incorrect backup GPT sector when written via EDL. Use
+  `gpt_primary_proper.bin` (sector 0) + `gpt_backup_proper.bin` (end of disk).
+- **Boot image with baked-in DTB** — `boot-jz0145.img` is an Android boot
+  image with the JZ0145-v33 DTB compiled in. Extlinux approach broke boot
+  because the aboot fastboot interface is unreachable from the host.
 - **qhypstub breaks stock SBL1** — must use Dragonboard firmware stack
-- **Stock GPT must be used initially** — custom GPT breaks boot chain
-- **The start.sh two-stage approach works**: EDL → Dragonboard aboot → fastboot → flash all
+- **EDL mode is always available** — reset button + USB plug, even on a
+  bricked device. Full stock restore from backup takes ~5 min.
 
 See [FLASH-GUIDE.md](FLASH-GUIDE.md) for full details.
 
@@ -270,13 +280,13 @@ The build bakes in cron scripts that run automatically:
 │   ├── install-packages.sh   # Post-flash package install (alternative to build)
 │   ├── files/                # Flash images
 │   │   ├── emmc_appsboot-test-signed.mbn  # Dragonboard bootloader
-│   │   ├── gpt_both0.bin                  # OpenStick partition table
+│   │   ├── gpt_primary_proper.bin         # Primary GPT (sector 0)
+│   │   ├── gpt_backup_proper.bin          # Backup GPT (end of disk)
 │   │   ├── sbl1.mbn, rpm.mbn, tz.mbn     # Dragonboard firmware
 │   │   ├── qhypstub-test-signed.mbn      # Hypervisor stub
 │   │   ├── sbc_1.0_8016.bin              # CDT
-│   │   ├── boot-ufi001c.img              # Linux kernel + initramfs
-│   │   ├── rootfs.img                    # Debian rootfs (sparse)
-│   │   └── lk2nd-msm8916.img            # lk2nd bootloader
+│   │   ├── boot-jz0145.img               # Linux kernel + JZ0145-v33 DTB
+│   │   └── rootfs.raw                    # Debian rootfs (raw image)
 │   └── start.sh              # Original kinsamanka flash script (reference)
 ├── PLAN.md             # Detailed project plan + findings
 ├── FLASH-GUIDE.md      # Step-by-step flash guide
