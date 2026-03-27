@@ -209,6 +209,80 @@ edl ws 0 ../full_firmware.bin   # Full 3.7 GB restore
 # ... etc
 ```
 
+## Post-Flash Configuration (Critical)
+
+After the initial flash, three additional steps are required before the
+dongle is fully functional.
+
+### 1. Copy device-specific modem firmware
+
+The rootfs ships with generic MSM8916 modem firmware. For the modem to
+actually connect to LTE networks, you MUST copy the device-specific
+firmware from the backup modem partition:
+
+```bash
+# Push backup images to the device
+adb push backup/partitions/modem.bin /tmp/modem.bin
+adb push backup/partitions/persist.bin /tmp/persist.bin
+
+# Mount and copy on device
+adb shell 'mount /tmp/modem.bin /mnt && cp /mnt/image/m* /mnt/image/wc* /lib/firmware/ && umount /mnt'
+adb shell 'mount /tmp/persist.bin /mnt && cp /mnt/WCNSS_qcom_wlan_nv.bin /lib/firmware/wlan/prima/ && umount /mnt'
+adb shell 'rm /tmp/*.bin'
+```
+
+Without this step, `mmcli -m 0` shows `DeviceNotReady` errors.
+
+### 2. Patch the device tree
+
+The boot image ships with the UFI001C ("Handsome Openstick") device tree.
+For correct LED, SIM slot, and GPIO support, patch it for JZ0145-v33:
+
+```bash
+# On the host:
+adb pull /sys/firmware/fdt /tmp/fdt
+wget -qO /tmp/patch.dts "https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2/raw/patch.dts"
+dtc -I dtb -O dts /tmp/fdt -o /tmp/default.dts
+cat /tmp/default.dts /tmp/patch.dts | dtc -I dts -O dts -o /tmp/jz01-45-v33.dts
+dtc -I dts -O dtb /tmp/jz01-45-v33.dts -o /tmp/jz01-45-v33.dtb
+adb push /tmp/jz01-45-v33.dtb /boot/
+```
+
+Then set up extlinux boot with the patched DTB:
+
+```bash
+adb shell 'mkfs.ext2 /dev/disk/by-partlabel/boot'
+adb shell 'mount /dev/disk/by-partlabel/boot /mnt'
+adb shell 'mkdir -p /mnt/extlinux'
+adb shell 'cat > /mnt/extlinux/extlinux.conf << EOF
+linux /vmlinuz
+initrd /initrd.img
+fdt /default.dtb
+append earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 no_framebuffer=true rw rootwait
+EOF'
+adb shell 'cp /boot/vmlinuz-* /mnt/vmlinuz'
+adb shell 'cp /boot/initrd.img-* /mnt/initrd.img'
+adb shell 'cp /boot/jz01-45-v33.dtb /mnt/ && ln -sf jz01-45-v33.dtb /mnt/default.dtb'
+adb shell 'umount /mnt'
+```
+
+The Dragonboard aboot (emmc_appsboot) supports extlinux boot natively
+from ext2 partitions — no lk2nd needed.
+
+### 3. Set up NAT gateway
+
+```bash
+adb shell 'sysctl -w net.ipv4.ip_forward=1'
+adb shell 'echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-forward.conf'
+adb shell 'iptables -t nat -A POSTROUTING -o wwan0 -j MASQUERADE'
+adb shell 'mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4'
+```
+
+Note: The rootfs does NOT have `nft` installed. Use `iptables` for NAT.
+
+The `configure-dongle.sh` script automates all three steps plus SSH, WiFi,
+hostname, and APN configuration.
+
 ## Key Learnings
 
 1. **Boot chain compatibility matters**: The stock Juzhen SBL1 is picky about
@@ -218,11 +292,38 @@ edl ws 0 ../full_firmware.bin   # Full 3.7 GB restore
    aboot), then replace the entire firmware stack.
 
 3. **Backup everything first**: The modem calibration data (modemst1/2, fsc, fsg)
-   is unique per device and cannot be regenerated.
+   AND the modem firmware partition are unique per device and cannot be regenerated.
 
-4. **lk2nd is useful but optional**: lk2nd provides fastboot recovery and
-   hardware detection. For initial flash, the Dragonboard aboot is sufficient.
-   lk2nd can be added later by flashing it to the boot partition.
+4. **Device-specific modem firmware is critical**: The generic firmware in the
+   rootfs results in `DeviceNotReady` errors. You must copy firmware from the
+   backup modem partition image.
 
-5. **USB port matters**: Unreliable USB connections (through hubs) can cause
-   EDL writes to fail silently. Use a direct USB port if possible.
+5. **lk2nd goes in BOOT, not ABOOT**: The stock SBL1 expects ELF in aboot.
+   lk2nd (Android boot image format) must go in the boot partition where it
+   gets loaded as a "kernel" by the stock aboot. lk2nd provides fastboot
+   recovery and hardware detection. For initial flash, the Dragonboard aboot
+   is used instead.
+
+6. **qhypstub breaks stock SBL1**: The stock Qualcomm hypervisor must be
+   replaced along with the entire Dragonboard firmware stack (SBL1, RPM, TZ).
+   You cannot mix stock SBL1 with qhypstub.
+
+7. **Mainline kernel requires qhypstub**: Testing confirmed the OpenStick kernel
+   crashes immediately under the stock Qualcomm hypervisor. The Dragonboard
+   firmware stack (with qhypstub) is mandatory.
+
+8. **Custom GPT breaks boot**: A "hybrid" GPT with modified early partitions
+   causes intermittent boot failures. The OpenStick GPT (`gpt_both0.bin`) must
+   be flashed via fastboot (which handles sector remapping), not via EDL.
+
+9. **The Dragonboard aboot supports extlinux boot**: `emmc_appsboot` can read
+   ext2 boot partitions with extlinux.conf, enabling DTB selection without lk2nd.
+
+10. **USB port matters**: Unreliable USB connections (through hubs) can cause
+    EDL writes to fail silently. Use a direct USB port if possible.
+
+11. **SSH PAM modules can hang on embedded**: Disable `pam_loginuid` and
+    `pam_selinux` in `/etc/pam.d/sshd`, and add `UseDNS no` to `sshd_config`.
+
+12. **System clock must be set**: The dongle has no RTC battery. Wrong date
+    (default: 2021) can cause auth timeouts. Set the date on first boot.
