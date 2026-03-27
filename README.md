@@ -71,19 +71,27 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 
 ## TODO
 
-- [ ] **Hardware watchdog**: needs boot grace period testing before deployment.
-      The LTE modem takes 60-90s to register after boot. The connection watchdog
-      must skip checks during the first 180s (3 min) after boot. The hardware
-      watchdog (`/dev/watchdog`) must not trigger during modem registration.
-      Caused a reboot loop in testing — do NOT install the watchdog package
-      until boot grace period is validated.
-      Connection watchdog must use `systemctl restart ModemManager` (NOT
-      `mmcli --disable/--enable`).
-- [ ] **SIM detection reliability**: SIM detection is intermittent on fresh rootfs.
-      With UFI001C DTB, SIM is often not detected. With JZ0145-v33 DTB (baked
-      into `boot-jz0145.img`), SIM is detected reliably. Sometimes requires a
-      physical replug. Once detected, modem connects to LTE automatically.
-- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA.
+- [ ] **Web GUI**: management interface for WiFi, APN, signal, data usage.
+      The stock firmware had a Vue.js web UI — need to build a replacement.
+- [ ] **Hardware watchdog**: needs boot grace period testing (180s) before
+      deployment. Caused reboot loops in testing. Connection watchdog must use
+      `systemctl restart ModemManager` (NOT `mmcli --disable/--enable`).
+- [ ] **WiFi password provisioning**: default is placeholder `changeme123`.
+      Define password schema for fleet deployment (per-device or shared).
+- [ ] **SSID schema**: currently uses original 2-digit IMEI suffix (`4G-UFI-12`).
+      Consider 4-digit suffix for fleet uniqueness.
+- [ ] **Fleet batch provisioning**: flash + configure multiple dongles in sequence.
+      Scripts exist but batch workflow not tested.
+- [ ] **Modem firmware in build**: currently copied post-flash from backup.
+      Integrate into Docker build process for reproducible images.
+- [ ] **SIM detection reliability**: intermittent on some boots, sometimes needs
+      physical replug. With JZ0145-v33 DTB it's more reliable.
+- [ ] **IPv4 vs IPv6**: carrier-dependent. Tango gives IPv6-only, POST gives IPv4.
+      APN config may need to be carrier-specific.
+- [ ] **NAT persistence testing**: iptables-restore service set up but needs
+      validation across multiple reboots.
+- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA, failover,
+      signal strength sensors.
 
 ## What's Running
 
