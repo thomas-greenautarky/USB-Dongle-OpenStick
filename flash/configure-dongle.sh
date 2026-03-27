@@ -34,6 +34,12 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
+ENV_FILE="$SCRIPT_DIR/../.env"
+
+# Load .env if present
+if [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -47,16 +53,18 @@ err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 # ─── Parse arguments ────────────────────────────────────────────────────────
 
 HOSTNAME="openstick"
-ROOT_PASSWORD=""
+ROOT_PASSWORD="${ROOT_PASSWORD:-}"
 SSH_KEY=""
 WIFI_SSID=""
-WIFI_PASSWORD=""
-APN=""
+WIFI_PASSWORD="${WIFI_PASSWORD:-}"
+APN="internet"
 TIMEZONE="UTC"
+NETBIRD_SETUP_KEY="${NETBIRD_SETUP_KEY:-}"
 SETUP_WIFI=true
 SETUP_NAT=true
 SETUP_FIRMWARE=true
 SETUP_APT_FIX=true
+SETUP_NETBIRD=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -71,6 +79,8 @@ while [[ $# -gt 0 ]]; do
         --no-nat)         SETUP_NAT=false; shift ;;
         --no-firmware)    SETUP_FIRMWARE=false; shift ;;
         --no-apt-fix)     SETUP_APT_FIX=false; shift ;;
+        --no-netbird)     SETUP_NETBIRD=false; shift ;;
+        --netbird-key)    NETBIRD_SETUP_KEY="$2"; shift 2 ;;
         *)                err "Unknown option: $1" ;;
     esac
 done
@@ -251,6 +261,22 @@ if $SETUP_WIFI && [ -n "$WIFI_SSID" ]; then
         $WIFI_PW_OPTION 2>/dev/null || echo 'WiFi hotspot config may need manual setup'"
 fi
 
+# ─── Configure NetBird VPN ───────────────────────────────────────────────────
+
+if $SETUP_NETBIRD && [ -n "$NETBIRD_SETUP_KEY" ]; then
+    log "Connecting NetBird VPN..."
+    if adb shell 'which netbird >/dev/null 2>&1'; then
+        adb shell "netbird up --setup-key $NETBIRD_SETUP_KEY" 2>&1
+        NB_IP=$(adb shell 'netbird status 2>/dev/null | grep "NetBird IP" | awk "{print \$NF}"' 2>/dev/null | tr -d '\r')
+        NB_FQDN=$(adb shell 'netbird status 2>/dev/null | grep "FQDN" | awk "{print \$NF}"' 2>/dev/null | tr -d '\r')
+        log "NetBird connected: $NB_IP ($NB_FQDN)"
+    else
+        warn "NetBird not installed. Run install-packages.sh --vpn netbird first."
+    fi
+elif $SETUP_NETBIRD; then
+    warn "NetBird: no setup key (set NETBIRD_SETUP_KEY in .env or use --netbird-key)"
+fi
+
 # ─── Configure LED indicators ────────────────────────────────────────────────
 
 log "Setting up LED indicators..."
@@ -266,10 +292,10 @@ echo ""
 log "Configuration complete!"
 echo ""
 echo "  Hostname:    $HOSTNAME"
-echo "  SSH:         root@192.168.68.1 (password: [set above])"
+echo "  SSH:         root@192.168.68.1 (password auth enabled)"
 echo "  USB network: 192.168.68.1/16 (DHCP via dnsmasq)"
 if [ -n "$APN" ]; then
-    echo "  LTE APN:     $APN"
+    echo "  LTE APN:     $APN (auto-connect on boot)"
 fi
 if $SETUP_WIFI && [ -n "$WIFI_SSID" ]; then
     echo "  WiFi:        $WIFI_SSID (AP mode on wlan0)"
@@ -277,11 +303,17 @@ fi
 if $SETUP_NAT; then
     echo "  NAT:         enabled (iptables, wwan0 masquerade)"
 fi
+if [ -n "$NB_FQDN" ]; then
+    echo "  NetBird:     $NB_IP ($NB_FQDN)"
+fi
 echo ""
 log "Rebooting dongle to apply all changes..."
 adb shell reboot
 
 echo ""
-log "Done! Wait 30s for reboot, then:"
+log "Done! Wait 60s for reboot, then:"
 echo "  ssh root@192.168.68.1"
+if [ -n "$NB_FQDN" ]; then
+    echo "  ssh root@$NB_FQDN  (via NetBird)"
+fi
 echo "  # Or: adb shell"
