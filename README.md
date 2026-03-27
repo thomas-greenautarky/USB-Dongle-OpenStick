@@ -64,8 +64,8 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 - [x] Phase 2: Board identified as JZ0145-v33 (xiaoxun,jz0145-v33)
 - [x] Phase 3: Boot chain analysis and flash method discovery
 - [x] Phase 4: Flash OpenStick — Debian 11 running
-- [ ] Phase 5: Configure RNDIS gateway for HA
-- [ ] Phase 6: Provisioning script (flash + configure)
+- [x] Phase 5: LTE connected, NAT gateway working, SSH access
+- [x] Phase 6: Provisioning scripts (flash-openstick.sh + configure-dongle.sh)
 - [ ] Phase 7: Home Assistant integration
 
 ## What's Running
@@ -102,6 +102,91 @@ Key findings:
 - **The start.sh two-stage approach works**: EDL → Dragonboard aboot → fastboot → flash all
 
 See [FLASH-GUIDE.md](FLASH-GUIDE.md) for full details.
+
+## Open Source vs Proprietary Components
+
+The dongle runs a mix of open source software and proprietary Qualcomm
+firmware. This is the same situation as any Qualcomm-based phone running
+a mainline kernel (PostmarketOS, LineageOS, etc.).
+
+### Open Source (kernel + userspace)
+
+| Component | License | Notes |
+|---|---|---|
+| Linux kernel 5.15 | GPL-2.0 | msm8916 mainline support, wcn36xx WiFi driver |
+| Debian 11 userspace | Various FOSS | apt, systemd, SSH, ModemManager, NetworkManager |
+| qhypstub | GPL-2.0 | Replaces the proprietary Qualcomm hypervisor |
+| dnsmasq | GPL-2.0 | DHCP/DNS on USB interface |
+| USB gadget (RNDIS) | GPL-2.0 | Mainline kernel driver |
+
+### Proprietary (firmware + bootloader)
+
+| Component | Source | Runs on | Purpose |
+|---|---|---|---|
+| **SBL1** (Secondary Boot Loader) | Dragonboard 410c | Application CPU | First code after ROM, initializes DDR, loads aboot |
+| **emmc_appsboot** (aboot) | Dragonboard 410c, based on LK | Application CPU | Bootloader, loads kernel, provides fastboot |
+| **TZ** (TrustZone) | Dragonboard 410c | ARM Secure World | Secure monitor, cryptographic services |
+| **RPM firmware** | Dragonboard 410c | RPM coprocessor | Power management (clocks, regulators, sleep) |
+| **Modem firmware** (MPSS) | Device backup | Hexagon DSP | LTE/3G/2G baseband, runs on dedicated DSP |
+| **WiFi firmware** (wcnss) | Device backup | WCNSS coprocessor | 802.11 MAC/PHY, runs on dedicated processor |
+| **WiFi NV calibration** | Device backup (persist) | WCNSS coprocessor | Per-device RF calibration data |
+| **CDT** (Config Data Table) | Dragonboard 410c | SBL1 | Board configuration for early boot |
+
+### Why proprietary firmware is needed
+
+Qualcomm MSM8916 has **4 coprocessors** in addition to the main ARM CPU:
+
+```
+┌─────────────────────────────────────────────────┐
+│  MSM8916 SoC                                    │
+│                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ ARM CPU  │  │ Hexagon  │  │  WCNSS   │      │
+│  │ (4x A53) │  │   DSP    │  │ (WiFi)   │      │
+│  │          │  │ (Modem)  │  │          │      │
+│  │ Linux    │  │ MPSS FW  │  │ wcnss FW │      │
+│  │ (open)   │  │ (closed) │  │ (closed) │      │
+│  └──────────┘  └──────────┘  └──────────┘      │
+│                                                 │
+│  ┌──────────┐  ┌──────────┐                     │
+│  │   RPM    │  │TrustZone │                     │
+│  │ (power)  │  │ (secure) │                     │
+│  │          │  │          │                     │
+│  │ rpm FW   │  │  tz FW   │                     │
+│  │ (closed) │  │ (closed) │                     │
+│  └──────────┘  └──────────┘                     │
+└─────────────────────────────────────────────────┘
+```
+
+Each coprocessor runs its own proprietary firmware loaded by the kernel
+via the `remoteproc` framework. Qualcomm does not publish source code
+for any of these firmwares. The modem and WiFi firmware are
+device-specific (tied to RF calibration), which is why we copy them
+from the stock firmware backup rather than using generic versions.
+
+The only component we replaced with open source is the **hypervisor**
+(qhypstub replaces the stock Qualcomm HYP), which is necessary because
+the mainline Linux kernel requires standard ARM hypervisor interfaces
+that the stock Qualcomm hypervisor does not provide.
+
+## Before and After
+
+| | Stock Android 4.4 | OpenStick Debian 11 |
+|---|---|---|
+| OS | Android 4.4.4 (KTU84P) | Debian 11 (bullseye) |
+| Kernel | 3.10 (Qualcomm fork) | 5.15 (mainline) |
+| Root access | No | Yes (full root) |
+| Shell | Limited busybox | Full bash + GNU tools |
+| Package manager | None | apt |
+| SSH | None | OpenSSH server |
+| Modem control | Buggy web API | mmcli / qmicli (CLI) |
+| USB networking | RNDIS without gateway | RNDIS with NAT gateway |
+| WiFi config | Web UI (Chinese) | NetworkManager CLI/API |
+| Cloud services | Chinese update server | None (fully self-hosted) |
+| APN config | Manual via web UI | `mmcli --simple-connect` |
+| Remote management | None | SSH, ADB |
+| Storage available | ~100 MB (locked) | 2.8 GB free |
+| Automation | None | systemd, cron, scripts |
 
 ## File Structure
 
