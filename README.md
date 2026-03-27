@@ -188,6 +188,47 @@ that the stock Qualcomm hypervisor does not provide.
 | Storage available | ~100 MB (locked) | 2.8 GB free |
 | Automation | None | systemd, cron, scripts |
 
+## Custom Image Build (Docker)
+
+Build a custom Debian image with your choice of package groups:
+
+```bash
+# Build the Docker image
+docker build -t openstick-builder build/
+
+# Build with defaults (base + monitoring + watchdog)
+docker run --rm --privileged -v $(pwd)/build/output:/output openstick-builder
+
+# Build with all packages + NetBird VPN
+docker run --rm --privileged -v $(pwd)/build/output:/output openstick-builder \
+  --packages "base monitoring diagnostics watchdog" \
+  --vpn netbird \
+  --hostname my-dongle
+```
+
+### Package Groups
+
+| Group | File | Contents |
+|---|---|---|
+| **base** | `build/packages/base.list` | Networking, modem, SSH, iptables, curl, jq, nano, htop |
+| **monitoring** | `build/packages/monitoring.list` | Signal monitor, connection watchdog, data usage (cron scripts) |
+| **diagnostics** | `build/packages/diagnostics.list` | tcpdump, mtr, iperf3, tmux, nftables |
+| **watchdog** | `build/packages/watchdog.list` | Hardware watchdog — auto-reboot on hang |
+| **vpn-netbird** | `build/packages/vpn-netbird.list` | NetBird mesh VPN for remote management |
+
+Default build includes: `base monitoring watchdog`
+
+### Monitoring (included via overlay)
+
+The build bakes in cron scripts that run automatically:
+
+| Script | Interval | Log file |
+|---|---|---|
+| `signal-monitor.sh` | 5 min | `/var/log/signal.log` |
+| `connection-watchdog.sh` | 3 min | Auto-restarts modem, reboots if needed |
+| `data-usage.sh` | 1 hour | `/var/log/data-usage.log` |
+| Clock sync | daily | NTP via HTTP Date header |
+
 ## File Structure
 
 ```
@@ -195,9 +236,22 @@ that the stock Qualcomm hypervisor does not provide.
 │   ├── partitions/     # Full stock firmware backup (Phase 1)
 │   ├── checksums.sha256
 │   └── getprop.txt     # Stock Android system properties
+├── build/
+│   ├── Dockerfile            # Docker build environment
+│   ├── build.sh              # Image build script
+│   ├── packages/             # Package group lists (.list files)
+│   │   ├── base.list         # Core packages (always installed)
+│   │   ├── monitoring.list   # Signal/connection monitoring
+│   │   ├── diagnostics.list  # tcpdump, mtr, iperf3, tmux
+│   │   ├── watchdog.list     # Hardware watchdog
+│   │   └── vpn-netbird.list  # NetBird mesh VPN
+│   └── overlay/              # Files baked into the image
+│       ├── usr/local/bin/    # Monitoring scripts
+│       └── etc/              # Cron jobs, logrotate, SSH config
 ├── flash/
 │   ├── flash-openstick.sh    # Automated flash script
 │   ├── configure-dongle.sh   # Post-flash configuration
+│   ├── install-packages.sh   # Post-flash package install (alternative to build)
 │   ├── files/                # Flash images
 │   │   ├── emmc_appsboot-test-signed.mbn  # Dragonboard bootloader
 │   │   ├── gpt_both0.bin                  # OpenStick partition table

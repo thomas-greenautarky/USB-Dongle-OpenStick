@@ -1,0 +1,39 @@
+# Base packages — always installed
+# These are required for a functional LTE gateway dongle
+
+# System
+locales
+sudo
+tzdata
+systemd-timesyncd
+cron
+logrotate
+
+# Networking
+iproute2
+iptables
+iptables-persistent
+dnsmasq
+net-tools
+network-manager
+wpasupplicant
+bridge-utils
+curl
+
+# Modem
+modemmanager
+qrtr-tools
+rmtfs
+libconfig9t64
+
+# SSH
+openssh-server
+
+# USB gadget
+hostapd
+
+# Utilities
+nano
+less
+htop
+jq

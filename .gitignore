@@ -5,8 +5,8 @@
 *.elf
 *.raw
 
-# Build output
-build/
+# Build output (not the build/ directory itself, just outputs)
+build/output/
 out/
 *.ext4
 

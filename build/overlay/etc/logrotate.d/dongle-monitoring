@@ -1,0 +1,11 @@
+/var/log/signal.log
+/var/log/connection-watchdog.log
+/var/log/data-usage.log
+{
+    rotate 4
+    weekly
+    maxsize 1M
+    compress
+    missingok
+    notifempty
+}

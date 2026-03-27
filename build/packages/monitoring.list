@@ -1,0 +1,4 @@
+# Monitoring packages — optional
+# Signal monitoring, connection watchdog, data usage tracking
+# These are handled by scripts in overlay, this just adds cron dependency
+# (cron is already in base.list)

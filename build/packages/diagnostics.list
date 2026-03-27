@@ -1,0 +1,8 @@
+# Diagnostics packages — optional
+# Network debugging tools for troubleshooting deployments
+
+tcpdump
+mtr-tiny
+iperf3
+tmux
+nftables
