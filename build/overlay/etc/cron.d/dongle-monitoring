@@ -7,5 +7,8 @@
 # Data usage every hour
 0 * * * * root /usr/local/bin/data-usage.sh
 
+# Auto-enable modem on boot
+@reboot root /usr/local/bin/modem-autoconnect.sh
+
 # Sync clock daily (no RTC battery on the dongle)
 0 3 * * * root date -s "$(curl -sI http://google.com 2>/dev/null | grep -i '^date:' | cut -d' ' -f2-)" 2>/dev/null || true

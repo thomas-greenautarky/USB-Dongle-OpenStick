@@ -68,6 +68,22 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 - [x] Phase 6: Provisioning scripts (flash-openstick.sh + configure-dongle.sh)
 - [ ] Phase 7: Home Assistant integration
 
+## TODO
+
+- [ ] **Hardware watchdog**: needs boot grace period testing before deployment.
+      The LTE modem takes 60-90s to register after boot. The connection watchdog
+      must skip checks during this window (currently set to 180s). The hardware
+      watchdog (`/dev/watchdog`) must not trigger during modem registration.
+      Caused a reboot loop in testing — do not enable until validated.
+- [ ] **Extlinux boot with JZ0145 DTB**: converting the boot partition to ext2
+      with extlinux.conf broke boot because the Dragonboard aboot's fastboot
+      interface uses USB ID `18d1:d001` which the host `fastboot` tool cannot
+      communicate with. Keep using Android boot image format for now.
+      Alternative: build a boot image with the JZ0145 DTB baked in.
+- [ ] **Build custom boot image**: embed `msm8916-jz01-45-v33.dtb` directly
+      in the Android boot image (like `boot-jz01.img` we created) instead of
+      relying on extlinux. This gives correct DTB without reformatting boot.
+
 ## What's Running
 
 After a successful flash, the dongle runs:

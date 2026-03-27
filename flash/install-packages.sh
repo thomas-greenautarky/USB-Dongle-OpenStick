@@ -74,7 +74,7 @@ BASE_PACKAGES=(
     # System management
     cron                # Scheduled tasks (signal monitoring, cleanup)
     logrotate           # Log rotation — prevent disk fill on 3.5GB
-    watchdog            # Hardware watchdog — auto-reboot on hang
+    # watchdog          # TODO: hardware watchdog needs boot grace period testing first
     nano                # Text editor for config files
     less                # Pager for log files
     jq                  # JSON parser — scripting, API responses
