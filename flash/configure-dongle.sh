@@ -23,8 +23,9 @@
 #   --hostname NAME       Set hostname (default: openstick)
 #   --root-password PW    Set root password (default: prompted)
 #   --ssh-key FILE        Install SSH public key for root
-#   --wifi-ssid SSID      Set WiFi hotspot SSID
-#   --wifi-password PW    Set WiFi hotspot password
+#   --wifi-ssid SSID      Set WiFi hotspot SSID (manual)
+#   --wifi-password PW    Set WiFi hotspot password (manual)
+#   --derive-wifi-psk     Auto-derive SSID (GA-XXXX) and PSK from IMEI + shared secret
 #   --apn APN             Set LTE APN (e.g., "internet")
 #   --timezone TZ         Set timezone (e.g., "Europe/Berlin")
 #   --no-wifi             Skip WiFi hotspot setup
@@ -60,6 +61,8 @@ WIFI_PASSWORD="${WIFI_PASSWORD:-}"
 APN="internet"
 TIMEZONE="UTC"
 NETBIRD_SETUP_KEY="${NETBIRD_SETUP_KEY:-}"
+OPENSTICK_WIFI_SECRET="${OPENSTICK_WIFI_SECRET:-}"
+DERIVE_WIFI_PSK=false
 SETUP_WIFI=true
 SETUP_NAT=true
 SETUP_FIRMWARE=true
@@ -81,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --no-apt-fix)     SETUP_APT_FIX=false; shift ;;
         --no-netbird)     SETUP_NETBIRD=false; shift ;;
         --netbird-key)    NETBIRD_SETUP_KEY="$2"; shift 2 ;;
+        --derive-wifi-psk) DERIVE_WIFI_PSK=true; shift ;;
         *)                err "Unknown option: $1" ;;
     esac
 done
@@ -241,6 +245,25 @@ if [ -n "$APN" ]; then
     adb shell "mmcli -m 0 --simple-connect='apn=$APN' 2>/dev/null || \
                nmcli connection add type gsm ifname '*' con-name lte apn '$APN' 2>/dev/null || \
                echo 'APN configuration may need manual setup'"
+fi
+
+# ─── Derive WiFi PSK from IMEI (if requested) ───────────────────────────────
+
+if $DERIVE_WIFI_PSK; then
+    if [ -z "$OPENSTICK_WIFI_SECRET" ]; then
+        err "OPENSTICK_WIFI_SECRET not set (check .env or use --no-wifi)"
+    fi
+    log "Deriving WiFi SSID and PSK from IMEI..."
+    IMEI=$(adb shell 'mmcli -m 0 -K 2>/dev/null | grep "modem.3gpp.imei" | cut -d: -f2 | tr -d " \r\n"')
+    if [ -z "$IMEI" ] || [ ${#IMEI} -lt 4 ]; then
+        err "Could not read IMEI from modem (got: '$IMEI')"
+    fi
+    IMEI_LAST4="${IMEI: -4}"
+    WIFI_SSID="GA-${IMEI_LAST4}"
+    WIFI_PASSWORD=$(echo -n "$WIFI_SSID" | openssl dgst -sha256 -hmac "$OPENSTICK_WIFI_SECRET" | cut -d' ' -f2 | cut -c1-16)
+    log "  IMEI:     ...${IMEI_LAST4}"
+    log "  SSID:     ${WIFI_SSID}"
+    log "  PSK:      ${WIFI_PASSWORD} (HMAC-SHA256 derived)"
 fi
 
 # ─── Configure WiFi hotspot ──────────────────────────────────────────────────

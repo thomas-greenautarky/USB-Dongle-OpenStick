@@ -48,11 +48,11 @@ bash flash-openstick.sh
 # 3. After Debian boots, configure the dongle:
 bash configure-dongle.sh \
   --hostname my-dongle \
-  --wifi-ssid "4G-Gateway" \
-  --wifi-password "mypassword" \
+  --derive-wifi-psk \
   --apn "internet" \
   --ssh-key ~/.ssh/id_ed25519.pub \
   --timezone Europe/Berlin
+# WiFi SSID (GA-XXXX) and password are auto-derived from IMEI + shared secret in .env
 ```
 
 ### Manual Flash (step by step)
@@ -76,10 +76,9 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 - [ ] **Hardware watchdog**: needs boot grace period testing (180s) before
       deployment. Caused reboot loops in testing. Connection watchdog must use
       `systemctl restart ModemManager` (NOT `mmcli --disable/--enable`).
-- [ ] **WiFi password provisioning**: default is placeholder `changeme123`.
-      Define password schema for fleet deployment (per-device or shared).
-- [ ] **SSID schema**: currently uses original 2-digit IMEI suffix (`4G-UFI-12`).
-      Consider 4-digit suffix for fleet uniqueness.
+- [x] **WiFi PSK derivation**: PSK derived from SSID using HMAC-SHA256 with shared
+      secret. See [WiFi PSK Derivation](#wifi-psk-derivation) below.
+- [x] **SSID schema**: `GA-XXXX` format using last 4 digits of IMEI for fleet uniqueness.
 - [ ] **Fleet batch provisioning**: flash + configure multiple dongles in sequence.
       Scripts exist but batch workflow not tested.
 - [ ] **Modem firmware in build**: currently copied post-flash from backup.
@@ -92,6 +91,63 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
       validation across multiple reboots.
 - [ ] **Home Assistant integration**: test RNDIS auto-detection by HA, failover,
       signal strength sensors.
+
+## WiFi PSK Derivation
+
+Each OpenStick's WiFi password is **derived deterministically** from its SSID using
+a shared secret. This allows KiBu (iHost) devices to auto-connect to any OpenStick
+without per-device pairing.
+
+### Algorithm
+
+```
+SSID = "GA-" + last_4_digits_of_IMEI
+PSK  = HMAC-SHA256(SHARED_SECRET, SSID)[:16]
+```
+
+- **HMAC-SHA256** — keyed hash, prevents length-extension attacks
+- **SSID as message** — acts as natural salt (unique per device)
+- **First 16 hex chars** — 64-bit password, sufficient for WPA2-PSK
+- **Shared secret** — 256-bit key, stored externally (never in this repo)
+
+### Shell Implementation
+
+```bash
+# Derive WiFi password from SSID + shared secret
+derive_wifi_psk() {
+    local ssid="$1"
+    local secret="$2"
+    echo -n "$ssid" | openssl dgst -sha256 -hmac "$secret" | cut -d' ' -f2 | cut -c1-16
+}
+
+# Example usage in configure-dongle.sh:
+IMEI=$(mmcli -m 0 -K | grep 'modem.3gpp.imei' | awk -F': ' '{print $2}')
+SSID="GA-${IMEI: -4}"
+PSK=$(derive_wifi_psk "$SSID" "$OPENSTICK_WIFI_SECRET")
+```
+
+### Secret Management
+
+The shared secret is **not stored in this repository** (public-safe):
+
+| Location | How secret is provided |
+|----------|----------------------|
+| **This repo** | `.env` file (gitignored): `OPENSTICK_WIFI_SECRET=<key>` |
+| **KiBu OS** | Baked at build time from `secrets/openstick-wifi.key` |
+| **CI** | GitHub Secret `OPENSTICK_WIFI_KEY` |
+| **ga-flasher** | Credentials DB or environment variable |
+
+The **algorithm is intentionally public** — security comes from the secret, not
+the method ([Kerckhoffs' principle](https://en.wikipedia.org/wiki/Kerckhoffs%27s_principle)).
+
+### Provisioning Flow
+
+```
+1. Flash OpenStick with Debian (flash-openstick.sh)
+2. Configure with PSK derivation:
+   configure-dongle.sh --derive-wifi-psk    # reads IMEI, derives SSID+PSK from .env secret
+3. KiBu auto-discovers GA-XXXX SSID, derives same PSK, connects
+```
 
 ## What's Running
 
