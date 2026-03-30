@@ -3,6 +3,30 @@
 Full backup of the original Android 4.4 firmware from the UFI 4G USB dongle,
 created via Qualcomm EDL (Emergency Download) mode on 2026-03-25.
 
+## Auto-Backup (modem calibration)
+
+The `flash-openstick.sh` script automatically reads the modem calibration
+data (IMEI, RF cal) from the device **before** flashing and saves it to
+`autosave_YYYYMMDD_HHMMSS/` directories. This means:
+
+- **No manual backup step is needed** before flashing a new stick
+- Each stick gets its own timestamped backup
+- The first auto-backup is also copied to `partitions/` as permanent backup
+- If auto-backup fails, the script falls back to `partitions/` or aborts
+
+### Critical partitions (device-specific, not regenerable)
+
+| Partition | Content |
+|-----------|---------|
+| `sec.bin` | Security/device identity |
+| `fsc.bin` | Factory Service Configuration |
+| `fsg.bin` | Modem firmware golden copy |
+| `modemst1.bin` | IMEI, RF calibration, carrier config (EFS) |
+| `modemst2.bin` | Backup of modemst1 |
+
+These are written at the factory during RF calibration. **If lost, the modem
+cannot connect to any network and has no IMEI.**
+
 ## Files (not in git — too large, stored locally)
 
 ### Full dump

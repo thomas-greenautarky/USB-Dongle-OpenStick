@@ -18,14 +18,13 @@
 #
 # Flash sequence:
 #   1. Enter EDL mode (reset button + USB plug, or adb reboot edl)
-#   2. Write split GPT (primary at sector 0, backup at end of disk)
-#   3. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
-#   4. Flash boot-jz0145.img (kernel with JZ0145-v33 DTB baked in)
-#   5. Flash rootfs.raw (Debian)
-#   6. Restore modem calibration from backup (sec, fsc, fsg, modemst1, modemst2)
-#   7. Reset → Debian boots
-#
-# IMPORTANT: A full backup must exist in ../backup/partitions/ before running.
+#   2. Auto-backup modem calibration (IMEI, RF cal) from device
+#   3. Write split GPT (primary at sector 0, backup at end of disk)
+#   4. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
+#   5. Flash boot-jz0145.img (kernel with JZ0145-v33 DTB baked in)
+#   6. Flash rootfs.raw (Debian)
+#   7. Restore modem calibration from auto-backup
+#   8. Reset → Debian boots
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILES_DIR="$SCRIPT_DIR/files"
@@ -33,6 +32,9 @@ BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
 
 # Backup GPT sector for 4GB eMMC (end of disk)
 BACKUP_GPT_SECTOR=7733215
+
+# Modem calibration partitions (device-specific, contain IMEI + RF calibration)
+MODEM_PARTITIONS=(sec fsc fsg modemst1 modemst2)
 
 # Required flash files
 REQUIRED_FILES=(
@@ -48,15 +50,6 @@ REQUIRED_FILES=(
     "$FILES_DIR/rootfs.raw"
 )
 
-# Required backup files (modem calibration)
-REQUIRED_BACKUP=(
-    "$BACKUP_DIR/sec.bin"
-    "$BACKUP_DIR/fsc.bin"
-    "$BACKUP_DIR/fsg.bin"
-    "$BACKUP_DIR/modemst1.bin"
-    "$BACKUP_DIR/modemst2.bin"
-)
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -68,14 +61,11 @@ err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
 # ─── Preflight checks ───────────────────────────────────────────────────────
 
-log "Checking required files..."
+log "Checking required flash files..."
 for f in "${REQUIRED_FILES[@]}"; do
     [ -f "$f" ] || err "Missing: $f"
 done
-for f in "${REQUIRED_BACKUP[@]}"; do
-    [ -f "$f" ] || err "Missing backup: $f (run Phase 1 backup first)"
-done
-log "All files present."
+log "All flash files present."
 
 which edl >/dev/null 2>&1   || err "edl not found. Install: pipx install edlclient"
 which adb >/dev/null 2>&1   || warn "adb not found (optional, for entering EDL from stock Android)"
@@ -109,14 +99,66 @@ done
 lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found after 60s"
 log "EDL device detected."
 
-# ─── Step 2: Write split GPT via EDL ────────────────────────────────────────
-# The GPT must be written as two separate files:
-#   - gpt_primary_proper.bin at sector 0
-#   - gpt_backup_proper.bin at the end of disk
-#
-# The original gpt_both0.bin has bugs: rootfs is 1MB placeholder, backup GPT
-# at wrong sector via EDL. The proper files have correct rootfs (3.6GB),
-# correct alternate_lba, and correct backup header.
+# ─── Step 2: Auto-backup modem calibration ──────────────────────────────────
+# Each dongle has unique IMEI + RF calibration data in these partitions.
+# We read them BEFORE flashing so they can be restored afterwards.
+# This makes the script safe for any stick — no manual backup needed.
+
+AUTOSAVE_DIR="$SCRIPT_DIR/../backup/autosave_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$AUTOSAVE_DIR"
+
+log "Reading modem calibration from device (IMEI, RF cal)..."
+BACKUP_OK=true
+for part in "${MODEM_PARTITIONS[@]}"; do
+    log "  Reading $part..."
+    if edl r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
+        log "  Saved $part ($(du -h "$AUTOSAVE_DIR/${part}.bin" | cut -f1))"
+    else
+        warn "  Failed to read $part from device"
+        BACKUP_OK=false
+    fi
+done
+
+# Verify we got valid data (not all zeros/empty)
+VALID_BACKUPS=0
+for part in "${MODEM_PARTITIONS[@]}"; do
+    f="$AUTOSAVE_DIR/${part}.bin"
+    if [ -f "$f" ] && [ "$(stat -c%s "$f")" -gt 0 ]; then
+        VALID_BACKUPS=$((VALID_BACKUPS + 1))
+    fi
+done
+
+if [ "$VALID_BACKUPS" -eq "${#MODEM_PARTITIONS[@]}" ]; then
+    log "Auto-backup complete: $AUTOSAVE_DIR ($VALID_BACKUPS/${#MODEM_PARTITIONS[@]} partitions)"
+    RESTORE_DIR="$AUTOSAVE_DIR"
+elif [ -d "$BACKUP_DIR" ]; then
+    # Fall back to existing manual backup
+    FALLBACK_OK=true
+    for part in "${MODEM_PARTITIONS[@]}"; do
+        [ -f "$BACKUP_DIR/${part}.bin" ] || FALLBACK_OK=false
+    done
+    if $FALLBACK_OK; then
+        warn "Auto-backup incomplete ($VALID_BACKUPS/${#MODEM_PARTITIONS[@]}), using existing backup: $BACKUP_DIR"
+        RESTORE_DIR="$BACKUP_DIR"
+    else
+        err "Auto-backup failed and no complete manual backup in $BACKUP_DIR. Aborting to protect modem calibration."
+    fi
+else
+    err "Auto-backup failed and no manual backup found. Aborting to protect modem calibration."
+fi
+
+# Also save to the standard backup location if it doesn't exist yet
+if [ ! -f "$BACKUP_DIR/sec.bin" ] && [ "$VALID_BACKUPS" -eq "${#MODEM_PARTITIONS[@]}" ]; then
+    log "Copying auto-backup to $BACKUP_DIR (first-time backup)..."
+    mkdir -p "$BACKUP_DIR"
+    cp "$AUTOSAVE_DIR"/*.bin "$BACKUP_DIR/"
+fi
+
+echo ""
+log "Modem calibration secured. Proceeding with flash..."
+echo ""
+
+# ─── Step 3: Write split GPT via EDL ────────────────────────────────────────
 
 log "Writing primary GPT (sector 0)..."
 edl ws 0 "$FILES_DIR/gpt_primary_proper.bin"
@@ -124,7 +166,7 @@ edl ws 0 "$FILES_DIR/gpt_primary_proper.bin"
 log "Writing backup GPT (sector $BACKUP_GPT_SECTOR)..."
 edl ws "$BACKUP_GPT_SECTOR" "$FILES_DIR/gpt_backup_proper.bin"
 
-# ─── Step 3: Flash Dragonboard firmware via EDL ─────────────────────────────
+# ─── Step 4: Flash Dragonboard firmware via EDL ─────────────────────────────
 
 log "Flashing Dragonboard firmware..."
 edl w sbl1  "$FILES_DIR/sbl1.mbn"
@@ -134,7 +176,7 @@ edl w hyp   "$FILES_DIR/qhypstub-test-signed.mbn"
 edl w cdt   "$FILES_DIR/sbc_1.0_8016.bin"
 edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
 
-# ─── Step 4: Flash boot image + rootfs via EDL ──────────────────────────────
+# ─── Step 5: Flash boot image + rootfs via EDL ──────────────────────────────
 
 log "Flashing boot image (boot-jz0145.img with JZ0145-v33 DTB)..."
 edl w boot "$FILES_DIR/boot-jz0145.img"
@@ -142,16 +184,16 @@ edl w boot "$FILES_DIR/boot-jz0145.img"
 log "Flashing Debian rootfs (this takes 2-5 minutes)..."
 edl w rootfs "$FILES_DIR/rootfs.raw"
 
-# ─── Step 5: Restore modem calibration data via EDL ─────────────────────────
+# ─── Step 6: Restore modem calibration data via EDL ─────────────────────────
 
-log "Restoring modem calibration data from backup..."
-edl w sec      "$BACKUP_DIR/sec.bin"
-edl w fsc      "$BACKUP_DIR/fsc.bin"
-edl w fsg      "$BACKUP_DIR/fsg.bin"
-edl w modemst1 "$BACKUP_DIR/modemst1.bin"
-edl w modemst2 "$BACKUP_DIR/modemst2.bin"
+log "Restoring modem calibration from: $RESTORE_DIR"
+for part in "${MODEM_PARTITIONS[@]}"; do
+    log "  Writing $part..."
+    edl w "$part" "$RESTORE_DIR/${part}.bin"
+done
+log "Modem calibration restored."
 
-# ─── Step 6: Reset and verify ───────────────────────────────────────────────
+# ─── Step 7: Reset and verify ───────────────────────────────────────────────
 
 log "Resetting device..."
 edl reset 2>&1 | tail -1 || true
@@ -159,20 +201,24 @@ edl reset 2>&1 | tail -1 || true
 log "Waiting for device to boot (30s)..."
 sleep 30
 
-# Check if ADB appears
-if which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
-    log "Device booted! ADB connected."
+# Check if RNDIS gadget appears (Debian with USB networking)
+if lsusb 2>/dev/null | grep -q "1d6b:0104"; then
+    log "Device booted! RNDIS USB gadget detected."
     echo ""
-    adb shell uname -a
-    adb shell cat /etc/os-release | head -3
+    log "Connect via SSH:"
+    log "  sudo ip addr add 192.168.68.100/24 dev \$(ip -o link | grep -v lo | grep UNKNOWN | awk -F': ' '{print \$2}' | head -1)"
+    log "  ssh root@192.168.68.1  (password: openstick)"
     echo ""
     log "OpenStick flash complete!"
-    log "Run configure-dongle.sh next to set up modem firmware, SSH, NAT, etc."
+    log "Run configure-dongle.sh next to set up modem firmware, WiFi, NAT, etc."
 else
-    warn "ADB not detected after 30s. The device may need more time to boot."
-    warn "Check: lsusb | grep 05c6"
-    warn "       adb devices"
+    warn "RNDIS gadget not detected after 30s. The device may need more time to boot."
+    warn "Check: lsusb | grep 1d6b:0104"
     warn ""
     warn "If the device does not boot, re-enter EDL (reset button + USB plug)"
     warn "and try again. EDL mode is always available for recovery."
 fi
+
+echo ""
+log "Modem calibration backup saved in: $RESTORE_DIR"
+log "Keep this backup safe — it contains your device's unique IMEI + RF data."

@@ -33,7 +33,7 @@ automated APN configuration.
 ```bash
 # Install tools
 pipx install edlclient     # Qualcomm EDL flash tool
-sudo apt install adb        # ADB for post-flash configuration
+sudo apt install android-sdk-libsparse-utils  # simg2img for image conversion
 ```
 
 ### Flash OpenStick (EDL-only method)
@@ -41,9 +41,15 @@ sudo apt install adb        # ADB for post-flash configuration
 ```bash
 # 1. Enter EDL: hold reset button while plugging in USB
 #    (or from stock Android: adb reboot edl)
+
 # 2. Run the flash script:
 cd flash
 bash flash-openstick.sh
+# The script automatically:
+#   - Backs up device-specific modem calibration (IMEI, RF cal) before flashing
+#   - Flashes GPT, firmware, kernel, and Debian rootfs via EDL
+#   - Restores modem calibration after flashing
+# No manual backup step needed — safe for any stick, including brand-new ones.
 
 # 3. After Debian boots, configure the dongle:
 bash configure-dongle.sh \
@@ -148,6 +154,29 @@ the method ([Kerckhoffs' principle](https://en.wikipedia.org/wiki/Kerckhoffs%27s
    configure-dongle.sh --derive-wifi-psk    # reads IMEI, derives SSID+PSK from .env secret
 3. KiBu auto-discovers GA-XXXX SSID, derives same PSK, connects
 ```
+
+## USB Connectivity (RNDIS over USB)
+
+The dongle acts as a **USB ethernet adapter** (RNDIS gadget) — no ADB, no
+Android tools needed. Just plug it in and SSH:
+
+```
+Host PC ←──USB──→ Dongle (192.168.68.1)
+              │
+              ├── RNDIS ethernet (auto-detected by host)
+              ├── DHCP server gives host 192.168.68.100-200
+              ├── SSH: ssh root@192.168.68.1
+              └── NAT gateway: host traffic → LTE
+```
+
+How it works:
+- `usb-gadget.service` creates an RNDIS gadget via configfs at boot
+- `usb0` gets static IP `192.168.68.1`
+- `dnsmasq` serves DHCP on `usb0`
+- `iptables` NAT masquerades traffic from `usb0` → `wwan0` (LTE)
+
+All configured in the build overlay — no post-flash setup needed for basic
+SSH access.
 
 ## What's Running
 
@@ -274,7 +303,7 @@ that the stock Qualcomm hypervisor does not provide.
 | WiFi config | Web UI (Chinese) | NetworkManager CLI/API |
 | Cloud services | Chinese update server | None (fully self-hosted) |
 | APN config | Manual via web UI | `mmcli --simple-connect` |
-| Remote management | None | SSH, ADB |
+| Remote management | None | SSH over USB (RNDIS) |
 | Storage available | ~100 MB (locked) | 2.8 GB free |
 | Automation | None | systemd, cron, scripts |
 
@@ -295,6 +324,21 @@ docker run --rm --privileged -v $(pwd)/build/output:/output openstick-builder \
   --vpn netbird \
   --hostname my-dongle
 ```
+
+### After building: prepare for flash
+
+The build produces a **sparse image** (Android format, ~314 MB). The flash
+script needs a **raw image** (1:1 copy of the partition). Convert it:
+
+```bash
+# Convert sparse → raw (needed for EDL flash)
+simg2img build/output/rootfs.img flash/files/rootfs.raw
+
+# Then flash as usual
+cd flash && bash flash-openstick.sh
+```
+
+`simg2img` is available via `apt install android-sdk-libsparse-utils`.
 
 ### Package Groups
 
@@ -338,8 +382,12 @@ The build bakes in cron scripts that run automatically:
 │   └── overlay/              # Files baked into the image
 │       ├── usr/local/bin/    # Monitoring scripts
 │       └── etc/              # Cron jobs, logrotate, SSH config
+├── backup/
+│   ├── partitions/           # Stock firmware + modem calibration backup
+│   ├── autosave_*/           # Auto-backups created by flash script (timestamped)
+│   └── README.md
 ├── flash/
-│   ├── flash-openstick.sh    # Automated flash script
+│   ├── flash-openstick.sh    # Automated flash script (auto-backups modem cal)
 │   ├── configure-dongle.sh   # Post-flash configuration
 │   ├── install-packages.sh   # Post-flash package install (alternative to build)
 │   ├── files/                # Flash images

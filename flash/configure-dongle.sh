@@ -2,19 +2,20 @@
 #
 # configure-dongle.sh — Configure an OpenStick dongle after flashing
 #
-# Connects via ADB and sets up:
+# Connects via SSH over USB RNDIS and sets up:
 #   - Device-specific modem + WiFi firmware (from backup)
 #   - Apt sources fix (Debian 11 bullseye is archived)
 #   - System clock (no RTC battery)
-#   - Root password + SSH access
+#   - Root password
 #   - Hostname + timezone
-#   - NAT gateway (USB → LTE)
-#   - WiFi hotspot (optional)
-#   - LTE APN (optional)
+#   - LTE APN
+#   - WiFi hotspot (optional, with HMAC-SHA256 PSK derivation)
+#   - NetBird VPN (optional)
 #
-# NOTE: DTB patching / extlinux setup is no longer needed. The boot-jz0145.img
-# has the JZ0145-v33 DTB baked in. The extlinux approach broke boot because
-# the Dragonboard aboot's fastboot interface is unreachable from the host.
+# Prerequisites:
+#   - Dongle flashed and booted (RNDIS gadget at 192.168.68.1)
+#   - Host IP set: sudo ip addr add 192.168.68.100/24 dev enxXXXX
+#   - Default SSH login: root / openstick
 #
 # Usage:
 #   bash configure-dongle.sh [options]
@@ -29,13 +30,16 @@
 #   --apn APN             Set LTE APN (e.g., "internet")
 #   --timezone TZ         Set timezone (e.g., "Europe/Berlin")
 #   --no-wifi             Skip WiFi hotspot setup
-#   --no-nat              Skip NAT gateway setup
 #   --no-firmware         Skip modem firmware copy
 #   --no-apt-fix          Skip apt sources fix
+#   --netbird-key KEY     Connect NetBird VPN with setup key
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
 ENV_FILE="$SCRIPT_DIR/../.env"
+
+DONGLE_IP="192.168.68.1"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
 
 # Load .env if present
 if [ -f "$ENV_FILE" ]; then
@@ -51,6 +55,16 @@ log()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
+# Run command on dongle via SSH
+run() {
+    ssh $SSH_OPTS "root@${DONGLE_IP}" "$@"
+}
+
+# Copy file to dongle via SCP
+push() {
+    scp $SSH_OPTS "$1" "root@${DONGLE_IP}:$2"
+}
+
 # ─── Parse arguments ────────────────────────────────────────────────────────
 
 HOSTNAME="openstick"
@@ -64,38 +78,39 @@ NETBIRD_SETUP_KEY="${NETBIRD_SETUP_KEY:-}"
 OPENSTICK_WIFI_SECRET="${OPENSTICK_WIFI_SECRET:-}"
 DERIVE_WIFI_PSK=false
 SETUP_WIFI=true
-SETUP_NAT=true
 SETUP_FIRMWARE=true
 SETUP_APT_FIX=true
 SETUP_NETBIRD=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --hostname)       HOSTNAME="$2"; shift 2 ;;
-        --root-password)  ROOT_PASSWORD="$2"; shift 2 ;;
-        --ssh-key)        SSH_KEY="$2"; shift 2 ;;
-        --wifi-ssid)      WIFI_SSID="$2"; shift 2 ;;
-        --wifi-password)  WIFI_PASSWORD="$2"; shift 2 ;;
-        --apn)            APN="$2"; shift 2 ;;
-        --timezone)       TIMEZONE="$2"; shift 2 ;;
-        --no-wifi)        SETUP_WIFI=false; shift ;;
-        --no-nat)         SETUP_NAT=false; shift ;;
-        --no-firmware)    SETUP_FIRMWARE=false; shift ;;
-        --no-apt-fix)     SETUP_APT_FIX=false; shift ;;
-        --no-netbird)     SETUP_NETBIRD=false; shift ;;
-        --netbird-key)    NETBIRD_SETUP_KEY="$2"; shift 2 ;;
+        --hostname)        HOSTNAME="$2"; shift 2 ;;
+        --root-password)   ROOT_PASSWORD="$2"; shift 2 ;;
+        --ssh-key)         SSH_KEY="$2"; shift 2 ;;
+        --wifi-ssid)       WIFI_SSID="$2"; shift 2 ;;
+        --wifi-password)   WIFI_PASSWORD="$2"; shift 2 ;;
+        --apn)             APN="$2"; shift 2 ;;
+        --timezone)        TIMEZONE="$2"; shift 2 ;;
+        --no-wifi)         SETUP_WIFI=false; shift ;;
+        --no-firmware)     SETUP_FIRMWARE=false; shift ;;
+        --no-apt-fix)      SETUP_APT_FIX=false; shift ;;
+        --no-netbird)      SETUP_NETBIRD=false; shift ;;
+        --netbird-key)     NETBIRD_SETUP_KEY="$2"; shift 2 ;;
         --derive-wifi-psk) DERIVE_WIFI_PSK=true; shift ;;
-        *)                err "Unknown option: $1" ;;
+        *)                 err "Unknown option: $1" ;;
     esac
 done
 
-# ─── Check ADB connection ───────────────────────────────────────────────────
+# ─── Check SSH connection ──────────────────────────────────────────────────
 
-log "Checking ADB connection..."
-adb devices 2>/dev/null | grep -q "device$" || err "No ADB device found. Is the dongle connected and booted?"
+log "Connecting to dongle at $DONGLE_IP..."
+if ! run "true" 2>/dev/null; then
+    err "Cannot SSH to $DONGLE_IP. Is the dongle booted and do you have an IP on the RNDIS interface?"
+fi
 
-OS=$(adb shell cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')
-log "Connected to: $OS"
+OS=$(run 'cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d "\"" ')
+KERNEL=$(run 'uname -r')
+log "Connected: $OS (kernel $KERNEL)"
 
 # ─── Prompt for missing values ───────────────────────────────────────────────
 
@@ -115,10 +130,10 @@ if $SETUP_FIRMWARE; then
         warn "Backup modem.bin or persist.bin not found in $BACKUP_DIR"
         warn "Skipping firmware copy — modem may not work without device-specific firmware!"
     else
-        adb push "$BACKUP_DIR/modem.bin" /tmp/modem.bin
-        adb push "$BACKUP_DIR/persist.bin" /tmp/persist.bin
+        push "$BACKUP_DIR/modem.bin" /tmp/modem.bin
+        push "$BACKUP_DIR/persist.bin" /tmp/persist.bin
 
-        adb shell '
+        run '
             mount /tmp/modem.bin /mnt 2>/dev/null
             if [ $? -eq 0 ]; then
                 cp /mnt/image/m* /mnt/image/wc* /lib/firmware/ 2>/dev/null || true
@@ -147,13 +162,13 @@ fi
 if $SETUP_APT_FIX; then
     log "Fixing apt sources (Debian 11 bullseye → archive.debian.org)..."
 
-    adb shell '
+    run '
         if grep -q "deb.debian.org" /etc/apt/sources.list 2>/dev/null; then
             sed -i "s|deb.debian.org|archive.debian.org|g" /etc/apt/sources.list
             sed -i "/security.debian.org/d" /etc/apt/sources.list
             echo "apt sources updated to archive.debian.org"
         else
-            echo "apt sources already fixed or not using deb.debian.org"
+            echo "apt sources already fixed"
         fi
     '
 fi
@@ -161,90 +176,40 @@ fi
 # ─── Configure hostname ─────────────────────────────────────────────────────
 
 log "Setting hostname to '$HOSTNAME'..."
-adb shell "echo '$HOSTNAME' > /etc/hostname"
-adb shell "sed -i 's/openstick/$HOSTNAME/g' /etc/hosts 2>/dev/null || true"
+run "echo '$HOSTNAME' > /etc/hostname"
+run "sed -i 's/openstick/$HOSTNAME/g' /etc/hosts 2>/dev/null || true"
 
 # ─── Configure root password ────────────────────────────────────────────────
 
 log "Setting root password..."
-adb shell "echo 'root:$ROOT_PASSWORD' | chpasswd"
+run "echo 'root:$ROOT_PASSWORD' | chpasswd"
 
-# ─── Configure SSH ───────────────────────────────────────────────────────────
-
-log "Configuring SSH..."
-adb shell "
-    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-    # Disable DNS lookups (prevents auth delays)
-    grep -q '^UseDNS' /etc/ssh/sshd_config || echo 'UseDNS no' >> /etc/ssh/sshd_config
-    # Disable PAM modules that cause hangs on embedded systems
-    sed -i 's/^.*pam_loginuid.*/#&/' /etc/pam.d/sshd
-    sed -i 's/^.*pam_selinux.*/#&/' /etc/pam.d/sshd
-"
+# ─── Configure SSH key ──────────────────────────────────────────────────────
 
 if [ -n "$SSH_KEY" ]; then
     if [ -f "$SSH_KEY" ]; then
         log "Installing SSH public key..."
-        adb shell "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
-        adb push "$SSH_KEY" /tmp/authorized_keys
-        adb shell "cat /tmp/authorized_keys > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && rm /tmp/authorized_keys"
+        run "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+        push "$SSH_KEY" /root/.ssh/authorized_keys
+        run "chmod 600 /root/.ssh/authorized_keys"
     else
         warn "SSH key file not found: $SSH_KEY"
     fi
 fi
 
-adb shell "systemctl restart sshd 2>/dev/null || true"
-
 # ─── Configure timezone + clock ──────────────────────────────────────────────
 
-log "Setting timezone to $TIMEZONE..."
-adb shell "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime 2>/dev/null || true"
-adb shell "date -s '$(date -u '+%Y-%m-%d %H:%M:%S')' 2>/dev/null || true"
-
-# ─── Configure NAT gateway (USB → LTE) ──────────────────────────────────────
-
-if $SETUP_NAT; then
-    log "Setting up NAT gateway (iptables)..."
-
-    adb shell '
-        # IP forwarding
-        sysctl -w net.ipv4.ip_forward=1 >/dev/null
-        echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-forward.conf
-
-        # NAT masquerade on wwan0
-        iptables -t nat -C POSTROUTING -o wwan0 -j MASQUERADE 2>/dev/null || \
-            iptables -t nat -A POSTROUTING -o wwan0 -j MASQUERADE
-
-        # Save rules for persistence
-        mkdir -p /etc/iptables
-        iptables-save > /etc/iptables/rules.v4
-
-        # Create restore service
-        cat > /etc/systemd/system/iptables-restore.service << "SVCEOF"
-[Unit]
-Description=Restore iptables rules
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-        systemctl enable iptables-restore 2>/dev/null
-        echo "NAT configured and persistent"
-    '
-fi
+log "Setting timezone to $TIMEZONE and syncing clock..."
+run "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime 2>/dev/null || true"
+run "date -s '$(date -u '+%Y-%m-%d %H:%M:%S')' 2>/dev/null || true"
 
 # ─── Configure LTE APN ──────────────────────────────────────────────────────
 
 if [ -n "$APN" ]; then
     log "Configuring LTE APN: $APN"
-    adb shell "mmcli -m 0 --simple-connect='apn=$APN' 2>/dev/null || \
-               nmcli connection add type gsm ifname '*' con-name lte apn '$APN' 2>/dev/null || \
-               echo 'APN configuration may need manual setup'"
+    run "mmcli -m 0 --simple-connect='apn=$APN' 2>/dev/null || \
+         nmcli connection add type gsm ifname '*' con-name lte apn '$APN' 2>/dev/null || \
+         echo 'APN configuration may need manual setup'"
 fi
 
 # ─── Derive WiFi PSK from IMEI (if requested) ───────────────────────────────
@@ -254,7 +219,7 @@ if $DERIVE_WIFI_PSK; then
         err "OPENSTICK_WIFI_SECRET not set (check .env or use --no-wifi)"
     fi
     log "Deriving WiFi SSID and PSK from IMEI..."
-    IMEI=$(adb shell 'mmcli -m 0 -K 2>/dev/null | grep "modem.3gpp.imei" | cut -d: -f2 | tr -d " \r\n"')
+    IMEI=$(run 'mmcli -m 0 -K 2>/dev/null | grep "modem.3gpp.imei" | cut -d: -f2 | tr -d " "')
     if [ -z "$IMEI" ] || [ ${#IMEI} -lt 4 ]; then
         err "Could not read IMEI from modem (got: '$IMEI')"
     fi
@@ -275,7 +240,7 @@ if $SETUP_WIFI && [ -n "$WIFI_SSID" ]; then
         WIFI_PW_OPTION="802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk $WIFI_PASSWORD"
     fi
 
-    adb shell "nmcli connection add type wifi ifname wlan0 con-name hotspot \
+    run "nmcli connection add type wifi ifname wlan0 con-name hotspot \
         autoconnect yes \
         wifi.mode ap \
         wifi.ssid '$WIFI_SSID' \
@@ -288,13 +253,13 @@ fi
 
 if $SETUP_NETBIRD && [ -n "$NETBIRD_SETUP_KEY" ]; then
     log "Connecting NetBird VPN..."
-    if adb shell 'which netbird >/dev/null 2>&1'; then
-        adb shell "netbird up --setup-key $NETBIRD_SETUP_KEY" 2>&1
-        NB_IP=$(adb shell 'netbird status 2>/dev/null | grep "NetBird IP" | awk "{print \$NF}"' 2>/dev/null | tr -d '\r')
-        NB_FQDN=$(adb shell 'netbird status 2>/dev/null | grep "FQDN" | awk "{print \$NF}"' 2>/dev/null | tr -d '\r')
+    if run 'which netbird >/dev/null 2>&1'; then
+        run "netbird up --setup-key $NETBIRD_SETUP_KEY" 2>&1
+        NB_IP=$(run 'netbird status 2>/dev/null | grep "NetBird IP" | awk "{print \$NF}"' 2>/dev/null)
+        NB_FQDN=$(run 'netbird status 2>/dev/null | grep "FQDN" | awk "{print \$NF}"' 2>/dev/null)
         log "NetBird connected: $NB_IP ($NB_FQDN)"
     else
-        warn "NetBird not installed. Run install-packages.sh --vpn netbird first."
+        warn "NetBird not installed. Build with --vpn netbird to include it."
     fi
 elif $SETUP_NETBIRD; then
     warn "NetBird: no setup key (set NETBIRD_SETUP_KEY in .env or use --netbird-key)"
@@ -303,40 +268,33 @@ fi
 # ─── Configure LED indicators ────────────────────────────────────────────────
 
 log "Setting up LED indicators..."
-adb shell '
-    # Red LED: heartbeat (system alive)
-    echo heartbeat > /sys/class/leds/red:os/trigger 2>/dev/null || true
-    echo "LEDs configured"
-'
+run 'echo heartbeat > /sys/class/leds/red:os/trigger 2>/dev/null || true'
 
-# ─── Reboot ──────────────────────────────────────────────────────────────────
+# ─── Summary ────────────────────────────────────────────────────────────────
 
 echo ""
 log "Configuration complete!"
 echo ""
 echo "  Hostname:    $HOSTNAME"
-echo "  SSH:         root@192.168.68.1 (password auth enabled)"
-echo "  USB network: 192.168.68.1/16 (DHCP via dnsmasq)"
+echo "  SSH:         ssh root@$DONGLE_IP"
+echo "  USB network: $DONGLE_IP/24 (RNDIS + dnsmasq DHCP)"
 if [ -n "$APN" ]; then
-    echo "  LTE APN:     $APN (auto-connect on boot)"
+    echo "  LTE APN:     $APN"
 fi
 if $SETUP_WIFI && [ -n "$WIFI_SSID" ]; then
     echo "  WiFi:        $WIFI_SSID (AP mode on wlan0)"
 fi
-if $SETUP_NAT; then
-    echo "  NAT:         enabled (iptables, wwan0 masquerade)"
-fi
+echo "  NAT:         pre-configured (iptables, wwan0 masquerade)"
 if [ -n "$NB_FQDN" ]; then
     echo "  NetBird:     $NB_IP ($NB_FQDN)"
 fi
 echo ""
 log "Rebooting dongle to apply all changes..."
-adb shell reboot
+run "reboot" 2>/dev/null || true
 
 echo ""
-log "Done! Wait 60s for reboot, then:"
-echo "  ssh root@192.168.68.1"
+log "Done! Wait 30s for reboot, then:"
+echo "  ssh root@$DONGLE_IP"
 if [ -n "$NB_FQDN" ]; then
     echo "  ssh root@$NB_FQDN  (via NetBird)"
 fi
-echo "  # Or: adb shell"

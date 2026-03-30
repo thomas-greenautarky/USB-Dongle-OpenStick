@@ -49,7 +49,34 @@ adb devices
 # Should show: 0  device
 ```
 
-## Procedure (EDL-Only Method)
+## Automated Flash (recommended)
+
+The flash script handles everything automatically, including modem calibration
+backup/restore:
+
+```bash
+cd flash && bash flash-openstick.sh
+```
+
+The script will:
+1. Detect the device (EDL, ADB, or prompt for manual EDL entry)
+2. **Auto-backup modem calibration** (IMEI, RF cal) from the device before flashing
+3. Write GPT, firmware, kernel, and rootfs via EDL
+4. **Restore modem calibration** from the auto-backup
+5. Reset and verify boot
+
+This is safe for **any stick** — no manual backup step needed. The script reads
+the device's unique calibration data before overwriting anything.
+
+See [Modem Calibration (Auto-Backup)](#modem-calibration-auto-backup) below
+for details on how this works.
+
+After the flash completes:
+```bash
+bash configure-dongle.sh
+```
+
+## Manual Flash (step by step)
 
 ### Step 1: Enter EDL Mode
 
@@ -119,7 +146,8 @@ without re-flashing via EDL.
 ### Step 5: Restore Modem Calibration
 
 The modem calibration data (IMEI, RF calibration) is device-specific.
-Restore from backup:
+If you used the automated script, this was handled automatically.
+For manual flash, restore from backup:
 
 ```bash
 cd ../../backup/partitions
@@ -130,22 +158,45 @@ edl w modemst1 modemst1.bin
 edl w modemst2 modemst2.bin
 ```
 
+**WARNING**: If you skip this step, the modem will have no IMEI and RF
+calibration will be wrong. The modem may not connect to any network.
+
 ### Step 6: Reset and Verify
 
 ```bash
 edl reset
 ```
 
-Wait 30 seconds. Verify:
+Wait 30-45 seconds for Debian to boot. Verify:
 ```bash
-adb devices
-# Should show: 0123456789  device
+# Check for RNDIS USB gadget
+lsusb | grep 1d6b:0104
+# Bus xxx Device xxx: ID 1d6b:0104 Linux Foundation Multifunction Composite Gadget
 
-adb shell uname -a
+# Set up host IP on the USB network interface
+sudo ip addr add 192.168.68.100/24 dev enxXXXXXXXXXXXX
+
+# SSH into the dongle (default password: openstick)
+ssh root@192.168.68.1
 # Linux openstick 5.15.0-handsomekernel+ ... aarch64 GNU/Linux
 ```
 
 ## Post-Flash Configuration
+
+All configuration is done via **SSH** over the RNDIS USB network. No ADB needed.
+
+### Connect to the dongle
+
+```bash
+# Find the RNDIS interface (shows as enxXXXX after plugging in)
+ip link show | grep enx
+
+# Add an IP on the host side
+sudo ip addr add 192.168.68.100/24 dev enxXXXXXXXXXXXX
+
+# SSH in (default password: openstick)
+ssh root@192.168.68.1
+```
 
 ### 1. Copy device-specific modem firmware
 
@@ -154,14 +205,14 @@ actually connect to LTE networks, you MUST copy the device-specific
 firmware from the backup modem partition:
 
 ```bash
-# Push backup images to the device
-adb push backup/partitions/modem.bin /tmp/modem.bin
-adb push backup/partitions/persist.bin /tmp/persist.bin
+# From the host, copy backup images to the dongle
+scp backup/partitions/modem.bin root@192.168.68.1:/tmp/
+scp backup/partitions/persist.bin root@192.168.68.1:/tmp/
 
-# Mount and copy on device
-adb shell 'mount /tmp/modem.bin /mnt && cp /mnt/image/m* /mnt/image/wc* /lib/firmware/ && umount /mnt'
-adb shell 'mount /tmp/persist.bin /mnt && cp /mnt/WCNSS_qcom_wlan_nv.bin /lib/firmware/wlan/prima/ && umount /mnt'
-adb shell 'rm /tmp/*.bin'
+# On the dongle (via SSH):
+mount /tmp/modem.bin /mnt && cp /mnt/image/m* /mnt/image/wc* /lib/firmware/ && umount /mnt
+mount /tmp/persist.bin /mnt && cp /mnt/WCNSS_qcom_wlan_nv.bin /lib/firmware/wlan/prima/ && umount /mnt
+rm /tmp/*.bin
 ```
 
 Without this step, `mmcli -m 0` shows `DeviceNotReady` errors.
@@ -170,59 +221,36 @@ Without this step, `mmcli -m 0` shows `DeviceNotReady` errors.
 
 ```bash
 # Fix apt sources (Debian 11 bullseye is archived)
-adb shell 'sed -i "s|deb.debian.org|archive.debian.org|g" /etc/apt/sources.list'
-adb shell 'sed -i "/security.debian.org/d" /etc/apt/sources.list'
+sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list
+sed -i '/security.debian.org/d' /etc/apt/sources.list
 
 # Set system clock (no RTC battery, defaults to 2021)
-adb shell "date -s '$(date -u '+%Y-%m-%d %H:%M:%S')'"
+date -s "$(wget -qO- --save-headers http://google.com 2>&1 | grep -i '^Date:' | cut -d' ' -f2-)"
 ```
 
-### 3. Set Root Password
+### 3. Change Root Password
 ```bash
-adb shell 'echo "root:YOUR_PASSWORD" | chpasswd'
+# Default password is "openstick" — change it!
+passwd root
 ```
 
-### 4. Enable SSH Root Login
+### 4. Configure LTE
 ```bash
-adb shell 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config'
-adb shell 'grep -q "^UseDNS" /etc/ssh/sshd_config || echo "UseDNS no" >> /etc/ssh/sshd_config'
-adb shell 'sed -i "s/^.*pam_loginuid.*/#&/" /etc/pam.d/sshd'
-adb shell 'sed -i "s/^.*pam_selinux.*/#&/" /etc/pam.d/sshd'
-adb shell 'systemctl restart sshd'
+mmcli -m 0 --simple-connect="apn=YOUR_APN"
 ```
 
-### 5. SSH Access
-The dongle creates a USB network interface (RNDIS) at 192.168.68.1:
+### 5. NAT gateway (USB → LTE forwarding)
+
+NAT is pre-configured in the image (`iptables` rules + `ip_forward`).
+Verify:
 ```bash
-# Add IP to your USB network interface
-sudo ip addr add 192.168.68.100/16 dev enxXXXXXXXXXXXX
-ssh root@192.168.68.1
+sysctl net.ipv4.ip_forward      # should show 1
+iptables -t nat -L POSTROUTING   # should show MASQUERADE on wwan0
 ```
 
-Or via ADB port forward:
+### 6. Configure WiFi Hotspot (optional)
 ```bash
-adb forward tcp:2222 tcp:22
-ssh -p 2222 root@127.0.0.1
-```
-
-### 6. Configure LTE
-```bash
-adb shell mmcli -m 0 --simple-connect="apn=YOUR_APN"
-```
-
-### 7. Set up NAT gateway (USB → LTE forwarding)
-```bash
-adb shell 'sysctl -w net.ipv4.ip_forward=1'
-adb shell 'echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-forward.conf'
-adb shell 'iptables -t nat -A POSTROUTING -o wwan0 -j MASQUERADE'
-adb shell 'mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4'
-```
-
-Note: The rootfs does NOT have `nft` installed. Use `iptables` for NAT.
-
-### 8. Configure WiFi Hotspot (optional)
-```bash
-adb shell nmcli connection add type wifi ifname wlan0 con-name hotspot \
+nmcli connection add type wifi ifname wlan0 con-name hotspot \
   wifi.mode ap wifi.ssid "MY-HOTSPOT" \
   802-11-wireless-security.key-mgmt wpa-psk \
   802-11-wireless-security.psk "MY-PASSWORD" \
@@ -298,6 +326,60 @@ DTB baked in. This works with the Dragonboard aboot (emmc_appsboot) and
 provides correct SIM detection, LED control, and GPIO mappings without
 needing extlinux or DTB patching at runtime.
 
+## Modem Calibration (Auto-Backup)
+
+Each USB dongle has **unique, device-specific** modem calibration data stored
+in 5 eMMC partitions. This data includes:
+
+| Partition | Content |
+|-----------|---------|
+| `sec` | Security/device identity |
+| `fsc` | Factory Service Configuration |
+| `fsg` | Factory Service Golden copy (modem firmware golden backup) |
+| `modemst1` | Modem EFS storage 1 (IMEI, RF calibration, carrier config) |
+| `modemst2` | Modem EFS storage 2 (backup of modemst1) |
+
+This data **cannot be regenerated** — it is written at the factory during
+RF calibration. If lost, the modem will have no IMEI and cannot connect
+to any mobile network.
+
+### How auto-backup works
+
+The `flash-openstick.sh` script automatically handles calibration:
+
+```
+1. Device enters EDL mode
+2. Script reads all 5 calibration partitions via EDL (edl r <part>)
+3. Saves to backup/autosave_YYYYMMDD_HHMMSS/
+4. Validates all files are non-empty
+5. Flashes GPT, firmware, kernel, rootfs (overwrites everything)
+6. Restores the 5 calibration partitions from the auto-backup
+```
+
+### Fallback behavior
+
+- If auto-backup succeeds → uses auto-backup for restore
+- If auto-backup partially fails → falls back to existing manual backup
+  in `backup/partitions/` (if complete)
+- If no backup is available at all → **script aborts** to prevent
+  losing calibration data
+- First successful auto-backup is also copied to `backup/partitions/`
+  as a permanent backup
+
+### Flashing a brand-new stick
+
+When flashing a stick for the first time, the script will:
+1. Read the stock calibration from the device (works in EDL even on stock Android)
+2. Save it before overwriting anything
+3. Restore it after flashing Debian
+
+No manual `edl r` backup step is needed. Just enter EDL and run the script.
+
+### Multiple sticks
+
+Each auto-backup is timestamped (`autosave_20260330_151200/`), so flashing
+multiple sticks in sequence is safe — each gets its own backup directory.
+
 ## Key Learnings
 
 1. **EDL-only flash is the reliable method**: The Dragonboard aboot's fastboot
@@ -353,9 +435,15 @@ needing extlinux or DTB patching at runtime.
 
 12. **SSH PAM modules can hang on embedded**: Disable `pam_loginuid` and
     `pam_selinux` in `/etc/pam.d/sshd`, and add `UseDNS no` to `sshd_config`.
+    These are pre-configured in the build overlay (`etc/ssh/sshd_config.d/dongle.conf`).
 
 13. **System clock must be set**: The dongle has no RTC battery. Wrong date
     (default: 2021) can cause auth timeouts. Set the date on first boot.
 
 14. **Fix apt sources for Debian 11**: Bullseye is archived; change
     `deb.debian.org` to `archive.debian.org` and remove the security line.
+
+15. **No ADB needed**: The dongle uses RNDIS USB networking + SSH instead
+    of Android ADB. The `usb-gadget.service` creates an RNDIS gadget at
+    boot, assigns IP `192.168.68.1`, and `dnsmasq` serves DHCP. Default
+    root password is `openstick`. All management is via SSH.

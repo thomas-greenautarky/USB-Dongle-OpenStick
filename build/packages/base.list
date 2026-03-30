@@ -22,9 +22,6 @@ curl
 
 # Modem
 modemmanager
-qrtr-tools
-rmtfs
-libconfig9t64
 
 # SSH
 openssh-server

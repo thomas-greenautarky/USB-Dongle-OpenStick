@@ -102,9 +102,9 @@ chroot "$CHROOT" qemu-aarch64-static /bin/bash /debootstrap/debootstrap --second
 # ─── Configure apt sources ──────────────────────────────────────────────────
 
 cat > "$CHROOT/etc/apt/sources.list" << EOF
-deb http://deb.debian.org/debian ${RELEASE} main contrib non-free-firmware
-deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free-firmware
-deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free
+deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free
 EOF
 
 # ─── Mount for chroot ───────────────────────────────────────────────────────
@@ -135,11 +135,12 @@ apt-get autoremove -qq -y
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
-# Root account: password disabled (set during provisioning)
-passwd -d root
+# Root account: default password (change during provisioning)
+echo 'root:openstick' | chpasswd
 
 # Create user account
 echo user:1::::/home/user:/bin/bash | newusers
+mkdir -p /etc/sudoers.d
 echo 'user ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/user
 INSTALLEOF
 
@@ -173,6 +174,32 @@ chmod +x "$CHROOT"/usr/local/bin/*.sh 2>/dev/null || true
 # Fix cron permissions
 chmod 644 "$CHROOT"/etc/cron.d/* 2>/dev/null || true
 chmod 644 "$CHROOT"/etc/logrotate.d/* 2>/dev/null || true
+
+# ─── Enable services ──────────────────────────────────────────────────────
+
+log "Enabling services..."
+
+# Enable USB RNDIS gadget
+if [ -f "$CHROOT/etc/systemd/system/usb-gadget.service" ]; then
+    mkdir -p "$CHROOT/etc/systemd/system/multi-user.target.wants"
+    ln -sf /etc/systemd/system/usb-gadget.service \
+        "$CHROOT/etc/systemd/system/multi-user.target.wants/usb-gadget.service"
+fi
+
+# Ensure /etc/network/interfaces sources interfaces.d/
+if ! grep -q "source.*interfaces.d" "$CHROOT/etc/network/interfaces" 2>/dev/null; then
+    echo "" >> "$CHROOT/etc/network/interfaces"
+    echo "source /etc/network/interfaces.d/*" >> "$CHROOT/etc/network/interfaces"
+fi
+
+# Enable dnsmasq
+mkdir -p "$CHROOT/etc/systemd/system/multi-user.target.wants"
+ln -sf /lib/systemd/system/dnsmasq.service \
+    "$CHROOT/etc/systemd/system/multi-user.target.wants/dnsmasq.service" 2>/dev/null || true
+
+# Enable SSH
+ln -sf /lib/systemd/system/ssh.service \
+    "$CHROOT/etc/systemd/system/multi-user.target.wants/ssh.service" 2>/dev/null || true
 
 # ─── Configure hostname ─────────────────────────────────────────────────────
 

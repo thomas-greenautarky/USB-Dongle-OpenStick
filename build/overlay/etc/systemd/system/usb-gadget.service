@@ -1,0 +1,13 @@
+[Unit]
+Description=USB RNDIS Network Gadget
+After=systemd-modules-load.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/usb-gadget.sh
+
+[Install]
+WantedBy=multi-user.target
