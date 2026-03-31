@@ -185,7 +185,7 @@ After a successful flash, the dongle runs:
 | Component | Details |
 |---|---|
 | OS | Debian 11 (bullseye), aarch64 |
-| Kernel | 5.15.0-handsomekernel+ |
+| Kernel | 6.6.0-msm8916 (postmarketOS) |
 | RAM | 382 MB (191 MB free) |
 | Storage | 3.5 GB rootfs (2.8 GB free) |
 | Modem | Qualcomm LTE, managed via ModemManager |

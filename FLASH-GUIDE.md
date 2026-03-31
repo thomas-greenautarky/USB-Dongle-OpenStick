@@ -447,3 +447,16 @@ multiple sticks in sequence is safe — each gets its own backup directory.
     of Android ADB. The `usb-gadget.service` creates an RNDIS gadget at
     boot, assigns IP `192.168.68.1`, and `dnsmasq` serves DHCP. Default
     root password is `openstick`. All management is via SSH.
+
+16. **Android boot images need initramfs**: The Dragonboard aboot loads an
+    Android boot image (kernel + ramdisk). If the ramdisk is missing or
+    empty (`/dev/null`), the kernel boots but cannot mount the root
+    filesystem and the dongle appears dead on USB. The working
+    `boot-jz01.img` has a 6.3 MB gzip initramfs — always include one.
+
+17. **Kernel modules must match the boot image kernel**: The 5.15-handsomekernel
+    boot image has netfilter compiled as modules (`=m`) but the `.ko` files
+    were never shipped. Without `/lib/modules/`, `iptables` and `nftables`
+    cannot load — NAT does not work. The postmarketOS 6.6 kernel includes
+    all modules in its `.apk` package. When switching kernels, always include
+    the matching modules in the rootfs overlay (`build/overlay/lib/modules/`).

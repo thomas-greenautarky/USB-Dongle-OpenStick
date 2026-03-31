@@ -12,7 +12,6 @@ logrotate
 # Networking
 iproute2
 iptables
-iptables-persistent
 dnsmasq
 net-tools
 network-manager

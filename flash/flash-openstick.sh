@@ -21,7 +21,7 @@
 #   2. Auto-backup modem calibration (IMEI, RF cal) from device
 #   3. Write split GPT (primary at sector 0, backup at end of disk)
 #   4. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
-#   5. Flash boot-jz0145.img (kernel with JZ0145-v33 DTB baked in)
+#   5. Flash boot.img (lk2nd + ext2 with 6.6 kernel, DTB, extlinux.conf)
 #   6. Flash rootfs.raw (Debian)
 #   7. Restore modem calibration from auto-backup
 #   8. Reset → Debian boots
@@ -46,7 +46,7 @@ REQUIRED_FILES=(
     "$FILES_DIR/tz.mbn"
     "$FILES_DIR/qhypstub-test-signed.mbn"
     "$FILES_DIR/sbc_1.0_8016.bin"
-    "$FILES_DIR/boot-jz0145.img"
+    "$FILES_DIR/boot.img"
     "$FILES_DIR/rootfs.raw"
 )
 
@@ -178,8 +178,8 @@ edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
 
 # ─── Step 5: Flash boot image + rootfs via EDL ──────────────────────────────
 
-log "Flashing boot image (boot-jz0145.img with JZ0145-v33 DTB)..."
-edl w boot "$FILES_DIR/boot-jz0145.img"
+log "Flashing boot image (lk2nd + 6.6 kernel with extlinux)..."
+edl w boot "$FILES_DIR/boot.img"
 
 log "Flashing Debian rootfs (this takes 2-5 minutes)..."
 edl w rootfs "$FILES_DIR/rootfs.raw"

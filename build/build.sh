@@ -138,6 +138,10 @@ rm -rf /var/lib/apt/lists/*
 # Root account: default password (change during provisioning)
 echo 'root:openstick' | chpasswd
 
+# Use nftables backend for iptables (kernel 6.6 supports both)
+update-alternatives --set iptables /usr/sbin/iptables-nft 2>/dev/null || true
+update-alternatives --set ip6tables /usr/sbin/ip6tables-nft 2>/dev/null || true
+
 # Create user account
 echo user:1::::/home/user:/bin/bash | newusers
 mkdir -p /etc/sudoers.d
@@ -147,6 +151,26 @@ INSTALLEOF
 log "Installing packages in chroot..."
 chroot "$CHROOT" qemu-aarch64-static /bin/sh /install.sh
 rm -f "$CHROOT/install.sh"
+
+# ─── Install postmarketOS MSM8916 kernel ───────────────────────────────────
+
+log "Installing postmarketOS 6.6 kernel (MSM8916)..."
+wget -qO - http://mirror.postmarketos.org/postmarketos/v24.06/aarch64/linux-postmarketos-qcom-msm8916-6.6-r5.apk \
+    | tar xzf - -C "$CHROOT" --exclude=.PKGINFO --exclude='.SIGN*' 2>/dev/null || true
+
+# Fix /lib symlink: the kernel .apk creates /lib/modules/ as a real directory,
+# but Debian bullseye uses usrmerge (/lib -> /usr/lib symlink). Without this fix,
+# the dynamic linker /lib/ld-linux-aarch64.so.1 is missing and no ELF can execute.
+if [ -d "$CHROOT/lib" ] && [ ! -L "$CHROOT/lib" ]; then
+    log "Fixing /lib symlink (usrmerge)..."
+    cp -a "$CHROOT/lib/"* "$CHROOT/usr/lib/" 2>/dev/null || true
+    rm -rf "$CHROOT/lib"
+    ln -s usr/lib "$CHROOT/lib"
+fi
+
+# Override with board-specific DTB
+mkdir -p "$CHROOT/boot/dtbs/qcom"
+cp /build/boot/msm8916-jz01-45-v33.dtb "$CHROOT/boot/dtbs/qcom/"
 
 # ─── Install NetBird VPN if requested ────────────────────────────────────────
 
@@ -171,6 +195,13 @@ cp -a /build/overlay/* "$CHROOT/" 2>/dev/null || true
 # Make scripts executable
 chmod +x "$CHROOT"/usr/local/bin/*.sh 2>/dev/null || true
 
+# Generate module dependency files (for modprobe)
+KVER=$(ls "$CHROOT/lib/modules/" 2>/dev/null | head -1)
+if [ -n "$KVER" ]; then
+    log "Running depmod for kernel $KVER..."
+    chroot "$CHROOT" qemu-aarch64-static /sbin/depmod -a "$KVER" 2>/dev/null || true
+fi
+
 # Fix cron permissions
 chmod 644 "$CHROOT"/etc/cron.d/* 2>/dev/null || true
 chmod 644 "$CHROOT"/etc/logrotate.d/* 2>/dev/null || true
@@ -190,6 +221,12 @@ fi
 if ! grep -q "source.*interfaces.d" "$CHROOT/etc/network/interfaces" 2>/dev/null; then
     echo "" >> "$CHROOT/etc/network/interfaces"
     echo "source /etc/network/interfaces.d/*" >> "$CHROOT/etc/network/interfaces"
+fi
+
+# Enable iptables NAT restore
+if [ -f "$CHROOT/etc/systemd/system/iptables-restore.service" ]; then
+    ln -sf /etc/systemd/system/iptables-restore.service \
+        "$CHROOT/etc/systemd/system/multi-user.target.wants/iptables-restore.service"
 fi
 
 # Enable dnsmasq
@@ -224,24 +261,51 @@ log "Creating rootfs image..."
 mkdir -p "$WORKDIR/mnt" "$OUTPUT_DIR"
 
 truncate -s "$ROOTFS_SIZE" "$WORKDIR/rootfs.raw"
-mkfs.ext4 "$WORKDIR/rootfs.raw"
+mkfs.ext2 -q "$WORKDIR/rootfs.raw"
 mount "$WORKDIR/rootfs.raw" "$WORKDIR/mnt"
 cp -a "$CHROOT"/* "$WORKDIR/mnt/" 2>/dev/null || true
+
+# Add extlinux boot config to rootfs (lk2nd scans ext2 partitions for this)
+mkdir -p "$WORKDIR/mnt/boot/extlinux" "$WORKDIR/mnt/boot/dtbs/qcom"
+cp /build/boot/extlinux.conf "$WORKDIR/mnt/boot/extlinux/"
+cp "$CHROOT/boot/vmlinuz" "$WORKDIR/mnt/boot/"
+cp "$CHROOT/boot/dtbs/qcom/msm8916-jz01-45-v33.dtb" "$WORKDIR/mnt/boot/dtbs/qcom/"
+
 umount "$WORKDIR/mnt"
 
 # Create sparse image for fastboot
 img2simg "$WORKDIR/rootfs.raw" "$OUTPUT_DIR/rootfs.img"
 
-log "Creating boot image..."
-truncate -s 67108864 "$WORKDIR/boot.raw"
-mkfs.ext2 "$WORKDIR/boot.raw"
-mount "$WORKDIR/boot.raw" "$WORKDIR/mnt"
-cp "$CHROOT/boot/vmlinuz-"* "$WORKDIR/mnt/vmlinuz" 2>/dev/null || true
-cp "$CHROOT/boot/initrd.img-"* "$WORKDIR/mnt/initrd.img" 2>/dev/null || true
+log "Creating boot image (lk2nd + ext2 kernel)..."
+
+# lk2nd occupies the first 512 KiB of the boot partition.
+# After booting, lk2nd scans for ext2 at 512K offset with /extlinux/extlinux.conf.
+LK2ND_SIZE=524288  # 512 KiB
+BOOT_TOTAL=67108864  # 64 MiB
+EXT2_SIZE=$((BOOT_TOTAL - LK2ND_SIZE))
+
+# Step 1: Create 64MB raw image with lk2nd at offset 0
+truncate -s "$BOOT_TOTAL" "$WORKDIR/boot.raw"
+dd if=/build/boot/lk2nd-msm8916.img of="$WORKDIR/boot.raw" conv=notrunc 2>/dev/null
+
+# Step 2: Create ext2 filesystem for kernel area (64MB - 512K)
+truncate -s "$EXT2_SIZE" "$WORKDIR/boot_ext2.raw"
+mkfs.ext2 -q "$WORKDIR/boot_ext2.raw"
+
+# Step 3: Populate ext2 with kernel, DTB, extlinux.conf
+mount "$WORKDIR/boot_ext2.raw" "$WORKDIR/mnt"
+cp "$CHROOT/boot/vmlinuz" "$WORKDIR/mnt/vmlinuz"
+mkdir -p "$WORKDIR/mnt/dtbs/qcom"
+cp "$CHROOT/boot/dtbs/qcom/msm8916-jz01-45-v33.dtb" "$WORKDIR/mnt/dtbs/qcom/"
 mkdir -p "$WORKDIR/mnt/extlinux"
-# extlinux.conf will be created during provisioning (needs device-specific DTB)
+cp /build/boot/extlinux.conf "$WORKDIR/mnt/extlinux/"
 umount "$WORKDIR/mnt"
-img2simg "$WORKDIR/boot.raw" "$OUTPUT_DIR/boot.img"
+
+# Step 4: Combine — dd ext2 at 512K offset (after lk2nd reservation)
+dd if="$WORKDIR/boot_ext2.raw" of="$WORKDIR/boot.raw" bs="$LK2ND_SIZE" seek=1 conv=notrunc 2>/dev/null
+
+# Output as raw (64MB, no sparse conversion needed for EDL)
+cp "$WORKDIR/boot.raw" "$OUTPUT_DIR/boot.img"
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 

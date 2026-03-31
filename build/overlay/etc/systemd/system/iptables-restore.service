@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore iptables NAT rules
+After=network-pre.target usb-gadget.service
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+
+[Install]
+WantedBy=multi-user.target
