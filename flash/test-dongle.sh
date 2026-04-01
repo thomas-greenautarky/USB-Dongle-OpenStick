@@ -176,23 +176,20 @@ else
     skip "QMI port" "not present"
 fi
 
-# AT commands
-AT_RESP=$(ssh_cmd 'timeout 3 sh -c "exec 3<>/dev/wwan0at0; echo -e \"ATI\r\" >&3; sleep 2; cat <&3"' 2>/dev/null)
-if echo "$AT_RESP" | grep -q "QUALCOMM"; then
-    IMEI=$(echo "$AT_RESP" | grep IMEI | awk '{print $2}' | tr -d '\r')
-    pass "AT commands (IMEI: $IMEI)"
+# IMEI (via mmcli — AT port is held by ModemManager)
+IMEI=$(ssh_cmd "mmcli -m 0 -K 2>/dev/null | grep modem.3gpp.imei | awk -F': ' '{print \$2}' | xargs")
+if [ -n "$IMEI" ] && [ "$IMEI" != "--" ]; then
+    pass "IMEI: $IMEI"
 else
-    skip "AT commands" "no response"
+    skip "IMEI" "modem not detected"
 fi
 
-# SIM
-SIM_RESP=$(ssh_cmd 'timeout 3 sh -c "exec 3<>/dev/wwan0at0; echo -e \"AT+CPIN?\r\" >&3; sleep 2; cat <&3"' 2>/dev/null)
-if echo "$SIM_RESP" | grep -q "READY"; then
-    pass "SIM card (READY)"
-elif echo "$SIM_RESP" | grep -q "SIM not inserted"; then
-    skip "SIM card" "not inserted"
+# SIM (via mmcli)
+SIM_STATE=$(ssh_cmd "mmcli -m 0 -K 2>/dev/null | grep modem.generic.sim | head -1 | awk -F': ' '{print \$2}' | xargs")
+if [ -n "$SIM_STATE" ] && [ "$SIM_STATE" != "--" ]; then
+    pass "SIM card (detected)"
 else
-    skip "SIM card" "unknown"
+    skip "SIM card" "not detected"
 fi
 
 # ModemManager detection

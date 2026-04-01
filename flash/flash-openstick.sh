@@ -198,27 +198,79 @@ log "Modem calibration restored."
 log "Resetting device..."
 edl reset 2>&1 | tail -1 || true
 
-log "Waiting for device to boot (30s)..."
-sleep 30
+log "Waiting for device to boot (45s)..."
+sleep 45
 
 # Check if RNDIS gadget appears (Debian with USB networking)
-if lsusb 2>/dev/null | grep -q "1d6b:0104"; then
-    log "Device booted! RNDIS USB gadget detected."
-    echo ""
-    log "Connect via SSH:"
-    log "  sudo ip addr add 192.168.68.100/24 dev \$(ip -o link | grep -v lo | grep UNKNOWN | awk -F': ' '{print \$2}' | head -1)"
-    log "  ssh root@192.168.68.1  (password: openstick)"
-    echo ""
-    log "OpenStick flash complete!"
-    log "Run configure-dongle.sh next to set up modem firmware, WiFi, NAT, etc."
-else
-    warn "RNDIS gadget not detected after 30s. The device may need more time to boot."
+if ! lsusb 2>/dev/null | grep -q "1d6b:0104"; then
+    warn "RNDIS gadget not detected after 45s. The device may need more time to boot."
     warn "Check: lsusb | grep 1d6b:0104"
-    warn ""
     warn "If the device does not boot, re-enter EDL (reset button + USB plug)"
-    warn "and try again. EDL mode is always available for recovery."
+    echo ""
+    log "Modem calibration backup saved in: $RESTORE_DIR"
+    exit 1
+fi
+
+log "Device booted! RNDIS USB gadget detected."
+
+# ─── Step 8: Copy device-specific modem NV storage via SSH ─────────────────
+# These files contain the factory IMEI + RF calibration (CE/RED compliant).
+# They MUST come from this specific dongle's backup — never from another device.
+
+DONGLE_IP="192.168.68.1"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+SSH_PASS="openstick"
+
+# Wait for SSH to be ready
+log "Waiting for SSH..."
+for i in $(seq 1 12); do
+    if SSHPASS="$SSH_PASS" sshpass -e ssh $SSH_OPTS "root@$DONGLE_IP" "echo OK" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 5
+done
+
+if which sshpass >/dev/null 2>&1 && SSHPASS="$SSH_PASS" sshpass -e ssh $SSH_OPTS "root@$DONGLE_IP" "echo OK" >/dev/null 2>&1; then
+    log "SSH connected. Copying device-specific modem NV storage..."
+
+    # Copy modemst1 → modem_fs1, modemst2 → modem_fs2, fsg → modem_fsg
+    for pair in "modemst1:modem_fs1" "modemst2:modem_fs2" "fsg:modem_fsg"; do
+        SRC="${pair%%:*}"
+        DST="${pair##*:}"
+        if [ -f "$RESTORE_DIR/${SRC}.bin" ]; then
+            SSHPASS="$SSH_PASS" sshpass -e scp $SSH_OPTS \
+                "$RESTORE_DIR/${SRC}.bin" "root@$DONGLE_IP:/boot/$DST"
+            log "  Copied $SRC → /boot/$DST"
+        else
+            warn "  Missing $RESTORE_DIR/${SRC}.bin — modem may not work"
+        fi
+    done
+
+    SSHPASS="$SSH_PASS" sshpass -e ssh $SSH_OPTS "root@$DONGLE_IP" "chmod 666 /boot/modem_fs*"
+    log "NV storage copied. Rebooting for modem auto-connect..."
+    SSHPASS="$SSH_PASS" sshpass -e ssh $SSH_OPTS "root@$DONGLE_IP" "reboot" 2>/dev/null || true
+
+    sleep 60
+    log "Waiting for LTE auto-connect (60s)..."
+    sleep 60
+
+    if SSHPASS="$SSH_PASS" sshpass -e ssh $SSH_OPTS "root@$DONGLE_IP" \
+        "ping -c 1 -W 5 8.8.8.8 >/dev/null 2>&1 && echo LTE_OK" 2>/dev/null | grep -q "LTE_OK"; then
+        log "LTE data verified!"
+    else
+        warn "LTE not yet connected. Check: ssh root@$DONGLE_IP mmcli -m 0"
+    fi
+else
+    warn "sshpass not installed or SSH not reachable."
+    warn "Copy modem NV storage manually:"
+    warn "  scp $RESTORE_DIR/modemst1.bin root@$DONGLE_IP:/boot/modem_fs1"
+    warn "  scp $RESTORE_DIR/modemst2.bin root@$DONGLE_IP:/boot/modem_fs2"
+    warn "  scp $RESTORE_DIR/fsg.bin root@$DONGLE_IP:/boot/modem_fsg"
 fi
 
 echo ""
-log "Modem calibration backup saved in: $RESTORE_DIR"
+log "OpenStick flash complete!"
+log "Modem calibration backup: $RESTORE_DIR"
 log "Keep this backup safe — it contains your device's unique IMEI + RF data."
+echo ""
+log "Verify with: bash test-dongle.sh"

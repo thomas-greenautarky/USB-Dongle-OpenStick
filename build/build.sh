@@ -200,6 +200,14 @@ $CC rmtfs.o qmi_rmtfs.o sharedmem.o storage.o util.o rproc.o \
 chmod +x "$CHROOT/usr/local/bin/qrtr-ns" "$CHROOT/usr/local/bin/rmtfs"
 cd /build
 
+# ─── Install modem firmware (generic, same for all dongles of this type) ────
+
+if [ -d /build/firmware ] && [ -f /build/firmware/modem.mdt ]; then
+    log "Installing modem firmware (53 files from stock backup)..."
+    mkdir -p "$CHROOT/lib/firmware"
+    cp /build/firmware/* "$CHROOT/lib/firmware/"
+fi
+
 # ─── Install NetBird VPN if requested ────────────────────────────────────────
 
 if [ "$INSTALL_VPN" = "netbird" ]; then
@@ -237,6 +245,10 @@ chmod 644 "$CHROOT"/etc/logrotate.d/* 2>/dev/null || true
 # ─── Enable services ──────────────────────────────────────────────────────
 
 log "Enabling services..."
+
+# Disable networking.service (conflicts with NetworkManager, causes "degraded" state)
+rm -f "$CHROOT/etc/systemd/system/multi-user.target.wants/networking.service" 2>/dev/null
+ln -sf /dev/null "$CHROOT/etc/systemd/system/networking.service" 2>/dev/null
 
 # Enable USB RNDIS gadget
 if [ -f "$CHROOT/etc/systemd/system/usb-gadget.service" ]; then
