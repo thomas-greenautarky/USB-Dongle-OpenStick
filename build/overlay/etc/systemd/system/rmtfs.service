@@ -1,0 +1,14 @@
+[Unit]
+Description=Qualcomm Remote Filesystem Service
+Before=ModemManager.service
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/qrtr-ns
+ExecStart=/usr/local/bin/rmtfs -s -P
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

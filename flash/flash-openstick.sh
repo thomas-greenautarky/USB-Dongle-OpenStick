@@ -21,7 +21,7 @@
 #   2. Auto-backup modem calibration (IMEI, RF cal) from device
 #   3. Write split GPT (primary at sector 0, backup at end of disk)
 #   4. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
-#   5. Flash boot.img (lk2nd + ext2 with 6.6 kernel, DTB, extlinux.conf)
+#   5. Flash boot.img (6.6 kernel with appended DTB, Android boot image format)
 #   6. Flash rootfs.raw (Debian)
 #   7. Restore modem calibration from auto-backup
 #   8. Reset → Debian boots
@@ -178,7 +178,7 @@ edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
 
 # ─── Step 5: Flash boot image + rootfs via EDL ──────────────────────────────
 
-log "Flashing boot image (lk2nd + 6.6 kernel with extlinux)..."
+log "Flashing boot image (6.6 kernel + appended DTB)..."
 edl w boot "$FILES_DIR/boot.img"
 
 log "Flashing Debian rootfs (this takes 2-5 minutes)..."

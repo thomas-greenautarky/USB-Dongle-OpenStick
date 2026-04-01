@@ -1,8 +1,10 @@
 FROM debian:bookworm
 
-RUN apt-get update && apt-get install -y \
+RUN dpkg --add-architecture arm64 && \
+    apt-get update && apt-get install -y \
     binfmt-support \
     cpio \
+    crossbuild-essential-arm64 \
     debootstrap \
     device-tree-compiler \
     dosfstools \
@@ -10,7 +12,9 @@ RUN apt-get update && apt-get install -y \
     android-sdk-libsparse-utils \
     git \
     kmod \
+    libudev-dev:arm64 \
     parted \
+    python3 \
     qemu-user-static \
     wget \
     xz-utils \

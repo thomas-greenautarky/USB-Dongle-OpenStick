@@ -168,9 +168,31 @@ if [ -d "$CHROOT/lib" ] && [ ! -L "$CHROOT/lib" ]; then
     ln -s usr/lib "$CHROOT/lib"
 fi
 
-# Override with board-specific DTB
-mkdir -p "$CHROOT/boot/dtbs/qcom"
-cp /build/boot/msm8916-jz01-45-v33.dtb "$CHROOT/boot/dtbs/qcom/"
+# ─── Cross-compile modem support tools (qrtr-ns, rmtfs) ────────────────────
+
+log "Building qrtr-ns and rmtfs for arm64..."
+CC=aarch64-linux-gnu-gcc
+
+# qrtr library + nameservice
+wget -qO- https://github.com/linux-msm/qrtr/archive/master.tar.gz | tar xz -C /tmp
+cd /tmp/qrtr-master
+$CC -c -I include lib/qrtr.c -o lib/qrtr.o
+$CC -c -I include lib/qmi.c -o lib/qmi.o
+$CC -c -I include lib/logging.c -o lib/logging.o
+ar rcs libqrtr.a lib/qrtr.o lib/qmi.o lib/logging.o
+$CC -static -I include src/addr.c src/lookup.c libqrtr.a -o "$CHROOT/usr/local/bin/qrtr-ns"
+
+# rmtfs (remote filesystem service for modem NV storage)
+wget -qO- https://github.com/linux-msm/rmtfs/archive/master.tar.gz | tar xz -C /tmp
+cd /tmp/rmtfs-master
+for f in rmtfs qmi_rmtfs sharedmem storage util rproc; do
+    $CC -I /tmp/qrtr-master/include -c ${f}.c
+done
+$CC rmtfs.o qmi_rmtfs.o sharedmem.o storage.o util.o rproc.o \
+    /tmp/qrtr-master/libqrtr.a -ludev -lpthread -o "$CHROOT/usr/local/bin/rmtfs"
+
+chmod +x "$CHROOT/usr/local/bin/qrtr-ns" "$CHROOT/usr/local/bin/rmtfs"
+cd /build
 
 # ─── Install NetBird VPN if requested ────────────────────────────────────────
 
@@ -229,6 +251,12 @@ if [ -f "$CHROOT/etc/systemd/system/iptables-restore.service" ]; then
         "$CHROOT/etc/systemd/system/multi-user.target.wants/iptables-restore.service"
 fi
 
+# Enable rmtfs (modem remote filesystem — must start before ModemManager)
+if [ -f "$CHROOT/etc/systemd/system/rmtfs.service" ]; then
+    ln -sf /etc/systemd/system/rmtfs.service \
+        "$CHROOT/etc/systemd/system/multi-user.target.wants/rmtfs.service"
+fi
+
 # Enable dnsmasq
 mkdir -p "$CHROOT/etc/systemd/system/multi-user.target.wants"
 ln -sf /lib/systemd/system/dnsmasq.service \
@@ -261,51 +289,32 @@ log "Creating rootfs image..."
 mkdir -p "$WORKDIR/mnt" "$OUTPUT_DIR"
 
 truncate -s "$ROOTFS_SIZE" "$WORKDIR/rootfs.raw"
-mkfs.ext2 -q "$WORKDIR/rootfs.raw"
+mkfs.ext4 "$WORKDIR/rootfs.raw"
 mount "$WORKDIR/rootfs.raw" "$WORKDIR/mnt"
 cp -a "$CHROOT"/* "$WORKDIR/mnt/" 2>/dev/null || true
-
-# Add extlinux boot config to rootfs (lk2nd scans ext2 partitions for this)
-mkdir -p "$WORKDIR/mnt/boot/extlinux" "$WORKDIR/mnt/boot/dtbs/qcom"
-cp /build/boot/extlinux.conf "$WORKDIR/mnt/boot/extlinux/"
-cp "$CHROOT/boot/vmlinuz" "$WORKDIR/mnt/boot/"
-cp "$CHROOT/boot/dtbs/qcom/msm8916-jz01-45-v33.dtb" "$WORKDIR/mnt/boot/dtbs/qcom/"
-
 umount "$WORKDIR/mnt"
 
-# Create sparse image for fastboot
+# Create sparse image for EDL flash
 img2simg "$WORKDIR/rootfs.raw" "$OUTPUT_DIR/rootfs.img"
 
-log "Creating boot image (lk2nd + ext2 kernel)..."
+# ─── Create boot image (Android boot image with appended DTB) ──────────────
+# The Dragonboard aboot loads this as a standard Android boot image.
+# DTB is appended after the gzip-compressed kernel — aboot finds it by scanning
+# for the FDT magic (0xd00dfeed) after the gzip stream.
 
-# lk2nd occupies the first 512 KiB of the boot partition.
-# After booting, lk2nd scans for ext2 at 512K offset with /extlinux/extlinux.conf.
-LK2ND_SIZE=524288  # 512 KiB
-BOOT_TOTAL=67108864  # 64 MiB
-EXT2_SIZE=$((BOOT_TOTAL - LK2ND_SIZE))
+log "Creating boot image (appended DTB)..."
 
-# Step 1: Create 64MB raw image with lk2nd at offset 0
-truncate -s "$BOOT_TOTAL" "$WORKDIR/boot.raw"
-dd if=/build/boot/lk2nd-msm8916.img of="$WORKDIR/boot.raw" conv=notrunc 2>/dev/null
+DTB="$CHROOT/boot/dtbs/qcom/msm8916-thwc-ufi001c.dtb"
+[ -f "$DTB" ] || err "DTB not found: $DTB"
 
-# Step 2: Create ext2 filesystem for kernel area (64MB - 512K)
-truncate -s "$EXT2_SIZE" "$WORKDIR/boot_ext2.raw"
-mkfs.ext2 -q "$WORKDIR/boot_ext2.raw"
-
-# Step 3: Populate ext2 with kernel, DTB, extlinux.conf
-mount "$WORKDIR/boot_ext2.raw" "$WORKDIR/mnt"
-cp "$CHROOT/boot/vmlinuz" "$WORKDIR/mnt/vmlinuz"
-mkdir -p "$WORKDIR/mnt/dtbs/qcom"
-cp "$CHROOT/boot/dtbs/qcom/msm8916-jz01-45-v33.dtb" "$WORKDIR/mnt/dtbs/qcom/"
-mkdir -p "$WORKDIR/mnt/extlinux"
-cp /build/boot/extlinux.conf "$WORKDIR/mnt/extlinux/"
-umount "$WORKDIR/mnt"
-
-# Step 4: Combine — dd ext2 at 512K offset (after lk2nd reservation)
-dd if="$WORKDIR/boot_ext2.raw" of="$WORKDIR/boot.raw" bs="$LK2ND_SIZE" seek=1 conv=notrunc 2>/dev/null
-
-# Output as raw (64MB, no sparse conversion needed for EDL)
-cp "$WORKDIR/boot.raw" "$OUTPUT_DIR/boot.img"
+cat "$CHROOT/boot/vmlinuz" "$DTB" > "$WORKDIR/vmlinuz-dtb"
+python3 /build/scripts/mkbootimg \
+    --kernel "$WORKDIR/vmlinuz-dtb" \
+    --cmdline "earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 rw rootwait" \
+    --base 0x80000000 \
+    --pagesize 2048 \
+    --header_version 0 \
+    -o "$OUTPUT_DIR/boot.img"
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 
