@@ -425,7 +425,7 @@ edl wf ../full_firmware.bin   # Writes entire 3.7 GB firmware
 - [OpenStick](https://github.com/OpenStick/OpenStick) — Original project
 - [OpenStick-Builder](https://github.com/kinsamanka/OpenStick-Builder) — Image builder
 - [JZxx installation guide](https://gist.github.com/kinsamanka/0b01cd02412bd13ee072072043d46fa2) — kinsamanka's start.sh
-- [USB-Dongle-WIFI-Configurator](https://github.com/thomas-greenautarky/USB-Dongle-WIFI-Configurator) — Stock Android provisioning
+- [OpenStick-Provisioner](https://github.com/thomas-greenautarky/OpenStick-Provisioner) — Fleet provisioning (WiFi PSK, APN, VPN, credentials)
 
 ## License
 
