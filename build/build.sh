@@ -34,7 +34,7 @@ PACKAGE_GROUPS="base monitoring watchdog"
 HOST_NAME="openstick"
 INSTALL_VPN=""
 OUTPUT_DIR="/output"
-RELEASE="bullseye"
+RELEASE="bookworm"
 ROOTFS_SIZE="1536M"
 
 # ─── Parse arguments ────────────────────────────────────────────────────────
@@ -102,9 +102,9 @@ chroot "$CHROOT" qemu-aarch64-static /bin/bash /debootstrap/debootstrap --second
 # ─── Configure apt sources ──────────────────────────────────────────────────
 
 cat > "$CHROOT/etc/apt/sources.list" << EOF
-deb http://deb.debian.org/debian ${RELEASE} main contrib non-free
-deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free
-deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free
+deb http://deb.debian.org/debian ${RELEASE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
 EOF
 
 # ─── Mount for chroot ───────────────────────────────────────────────────────
