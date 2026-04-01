@@ -496,11 +496,11 @@ multiple sticks in sequence is safe — each gets its own backup directory.
     root password is `openstick`. All management is via SSH.
 
 16. **No initramfs needed with 6.6 kernel**: The postmarketOS 6.6 kernel has
-    ext4 built-in and can mount the rootfs directly. The old 5.15 kernel
-    needed a 6.3 MB initramfs. With 6.6, the boot image is just kernel + DTB.
+    ext4 built-in and can mount the rootfs directly. No initramfs needed —
+    the boot image is just kernel + appended DTB (~7 MB).
 
 17. **usrmerge /lib symlink is critical**: The postmarketOS kernel .apk creates
-    `/lib/modules/` as a real directory, replacing Debian bullseye's `/lib → /usr/lib`
+    `/lib/modules/` as a real directory, replacing Debian's `/lib → /usr/lib`
     symlink. Without this symlink, the dynamic linker `/lib/ld-linux-aarch64.so.1`
     is missing and NO ELF binary can execute (kernel panic: "init failed error -2").
     The build.sh fixes this automatically after kernel extraction.

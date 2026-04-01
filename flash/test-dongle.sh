@@ -208,7 +208,9 @@ fi
 echo ""
 echo "── 8. LTE Data ──"
 
-BEARER=$(ssh_cmd "mmcli -b 0 2>/dev/null")
+# Try both bearer 0 and 1 (bearer 0 is initial-attach, bearer 1 is data)
+BEARER=$(ssh_cmd "mmcli -b 1 2>/dev/null")
+echo "$BEARER" | grep -q "connected.*yes" || BEARER=$(ssh_cmd "mmcli -b 0 2>/dev/null")
 if echo "$BEARER" | grep -q "connected.*yes"; then
     IP=$(echo "$BEARER" | grep "address:" | head -1 | awk '{print $NF}')
     pass "LTE bearer (IP: $IP)"
@@ -243,10 +245,43 @@ else
     fail "iptables MASQUERADE" "no rule found"
 fi
 
-# ─── 10. Resources ───────────────────────────────────────────────────────────
+# ─── 10. Boot Persistence ─────────────────────────────────────────────────────
 
 echo ""
-echo "── 10. Resources ──"
+echo "── 10. Boot Persistence ──"
+
+# iptables rules file (loaded at boot by iptables-restore.service)
+if ssh_cmd "test -f /etc/iptables/rules.v4"; then
+    pass "iptables rules.v4 present"
+else
+    fail "iptables rules.v4" "missing — NAT won't survive reboot"
+fi
+
+# iptables-restore service
+IPTREST=$(ssh_cmd "systemctl is-active iptables-restore 2>/dev/null")
+[[ "$IPTREST" == "active" ]] && pass "iptables-restore.service" || fail "iptables-restore" "$IPTREST"
+
+# modem-autoconnect service
+AUTOCONN=$(ssh_cmd "systemctl is-active modem-autoconnect 2>/dev/null")
+[[ "$AUTOCONN" == "active" ]] && pass "modem-autoconnect.service" || \
+    { [[ "$AUTOCONN" == "inactive" ]] && pass "modem-autoconnect.service (completed)" || fail "modem-autoconnect" "$AUTOCONN"; }
+
+# clock-sync service
+CLOCK=$(ssh_cmd "systemctl is-active clock-sync 2>/dev/null")
+[[ "$CLOCK" == "active" ]] || [[ "$CLOCK" == "inactive" ]] && pass "clock-sync.service (ran)" || fail "clock-sync" "$CLOCK"
+
+# System clock sanity (should be 2025+ not 1970)
+YEAR=$(ssh_cmd "date +%Y")
+[[ "$YEAR" -ge 2025 ]] && pass "System clock ($YEAR)" || fail "System clock" "year=$YEAR (not synced)"
+
+# APN config
+APN=$(ssh_cmd "cat /etc/default/lte-apn 2>/dev/null | grep -v '^#' | head -1")
+[[ -n "$APN" ]] && pass "APN config ($APN)" || fail "APN config" "missing /etc/default/lte-apn"
+
+# ─── 11. Resources ───────────────────────────────────────────────────────────
+
+echo ""
+echo "── 11. Resources ──"
 
 DISK=$(ssh_cmd "df -h / | tail -1 | awk '{print \$4}'")
 pass "Free disk: $DISK"

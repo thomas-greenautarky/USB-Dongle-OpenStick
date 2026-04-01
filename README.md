@@ -78,19 +78,23 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 
 ## TODO
 
-- [ ] **Modem auto-connect on boot**: `mmcli --simple-connect` needs to run after
-      modem registers. Needs a systemd service or NetworkManager connection profile.
-- [ ] **NAT persistence testing**: iptables-restore service set up but needs
-      validation across multiple reboots.
-- [ ] **Hardware watchdog**: needs boot grace period testing (180s) before
-      deployment. Connection watchdog must use `systemctl restart ModemManager`.
-- [ ] **Web GUI**: management interface for WiFi, APN, signal, data usage.
-- [x] **WiFi PSK derivation**: PSK derived from SSID using HMAC-SHA256 with shared
-      secret. See [WiFi PSK Derivation](#wifi-psk-derivation) below.
-- [x] **SSID schema**: `GA-XXXX` format using last 4 digits of IMEI for fleet uniqueness.
+- [x] **Modem auto-connect on boot**: modem-autoconnect.service enables modem,
+      waits for registration, runs `mmcli --simple-connect`, configures wwan0 IP.
+      APN configurable via `/etc/default/lte-apn`.
+- [x] **NAT persistence**: iptables-restore.service loads `/etc/iptables/rules.v4`
+      at boot (MASQUERADE on wwan0).
+- [x] **Watchdog**: connection-watchdog.sh (cron every 3 min) with 5 min grace
+      period. Recovery: re-autoconnect → restart MM → reboot.
+- [x] **Clock sync**: clock-sync.service syncs via HTTP Date header after LTE.
+- [x] **Modem firmware in build**: 53 firmware files baked into rootfs.
+      Only device-specific NV storage (IMEI/RF cal) copied per dongle.
+- [x] **WiFi PSK derivation**: HMAC-SHA256 from SSID + shared secret.
+- [x] **SSID schema**: `GA-XXXX` format using last 4 digits of IMEI.
+- [x] **Test suite**: `bash test-dongle.sh` — 39 automated tests (USB, SSH,
+      kernel, modules, services, modem, LTE, NAT, resources).
 - [ ] **Fleet batch provisioning**: flash + configure multiple dongles in sequence.
-- [ ] **Modem firmware in build**: currently copied post-flash from backup.
-- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA, failover.
+- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA.
+- [ ] **Web GUI**: management interface for WiFi, APN, signal, data usage.
 
 ## WiFi PSK Derivation
 
