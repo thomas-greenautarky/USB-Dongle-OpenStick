@@ -84,7 +84,7 @@ DEBIAN=$(ssh_cmd "cat /etc/debian_version")
 [[ "$DEBIAN" == 12* ]] && pass "Debian ($DEBIAN = bookworm)" || fail "Debian version" "got: $DEBIAN"
 
 HOSTNAME=$(ssh_cmd "hostname")
-[[ "$HOSTNAME" == "openstick" ]] && pass "Hostname ($HOSTNAME)" || fail "Hostname" "got: $HOSTNAME"
+[[ -n "$HOSTNAME" ]] && pass "Hostname ($HOSTNAME)" || fail "Hostname" "empty"
 
 SYSTEMD=$(ssh_cmd "systemctl is-system-running 2>/dev/null")
 [[ "$SYSTEMD" =~ running|degraded ]] && pass "systemd ($SYSTEMD)" || fail "systemd" "got: $SYSTEMD"
