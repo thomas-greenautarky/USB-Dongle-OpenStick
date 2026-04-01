@@ -185,7 +185,7 @@ After a successful flash, the dongle runs:
 | Component | Details |
 |---|---|
 | OS | Debian 11 (bullseye), aarch64 |
-| Kernel | 6.6.0-msm8916 (postmarketOS) |
+| Kernel | 6.6.0-msm8916 (postmarketOS, appended DTB boot) |
 | RAM | 382 MB (191 MB free) |
 | Storage | 3.5 GB rootfs (2.8 GB free) |
 | Modem | Qualcomm LTE, managed via ModemManager |
@@ -202,20 +202,21 @@ flash approach that differs from the standard OpenStick instructions:
 ```
 EDL → Write GPT + Dragonboard firmware + kernel + rootfs directly to eMMC
                                               ↓
-Dragonboard SBL1 → qhypstub → Dragonboard aboot → boot-jz0145.img → Debian
+Dragonboard SBL1 → qhypstub → Dragonboard aboot → boot.img (6.6 kernel + appended DTB) → Debian
 ```
 
 Key findings:
 - **EDL-only flash works reliably** — no fastboot step needed
-- **Fastboot is unreliable on this board** — Dragonboard aboot exposes USB ID
-  `18d1:d001` / `05c6:9091`, which the host `fastboot` tool (v34.0.5) cannot
-  communicate with. ADB server also holds the USB device, blocking fastboot.
-- **GPT must be split into primary + backup** — `gpt_both0.bin` has wrong
-  rootfs size and incorrect backup GPT sector when written via EDL. Use
-  `gpt_primary_proper.bin` (sector 0) + `gpt_backup_proper.bin` (end of disk).
-- **Boot image with baked-in DTB** — `boot-jz0145.img` is an Android boot
-  image with the JZ0145-v33 DTB compiled in. Extlinux approach broke boot
-  because the aboot fastboot interface is unreachable from the host.
+- **Appended DTB boot format** — the kernel (vmlinuz) and DTB are concatenated
+  (`cat vmlinuz dtb > kernel`) and packed into an Android boot image with mkbootimg.
+  The Dragonboard aboot finds the DTB by scanning for FDT magic after the gzip stream.
+- **Stock postmarketOS DTB** — `msm8916-thwc-ufi001c.dtb` from the kernel package
+  works for JZ0145-v33 boards. Custom DTBs are not needed.
+- **GPT must be split into primary + backup** — use `gpt_primary_proper.bin` (sector 0)
+  + `gpt_backup_proper.bin` (end of disk).
+- **Modem support** — rmtfs and qrtr-ns are cross-compiled in the Docker build.
+  rmtfs provides NV storage (IMEI, RF cal) to the modem DSP via shared memory.
+  Device-specific modem firmware must be copied from backup post-flash.
 - **qhypstub breaks stock SBL1** — must use Dragonboard firmware stack
 - **EDL mode is always available** — reset button + USB plug, even on a
   bricked device. Full stock restore from backup takes ~5 min.
@@ -232,7 +233,7 @@ a mainline kernel (PostmarketOS, LineageOS, etc.).
 
 | Component | License | Notes |
 |---|---|---|
-| Linux kernel 5.15 | GPL-2.0 | msm8916 mainline support, wcn36xx WiFi driver |
+| Linux kernel 6.6 | GPL-2.0 | postmarketOS msm8916 mainline, all netfilter modules |
 | Debian 11 userspace | Various FOSS | apt, systemd, SSH, ModemManager, NetworkManager |
 | qhypstub | GPL-2.0 | Replaces the proprietary Qualcomm hypervisor |
 | dnsmasq | GPL-2.0 | DHCP/DNS on USB interface |
@@ -293,7 +294,7 @@ that the stock Qualcomm hypervisor does not provide.
 | | Stock Android 4.4 | OpenStick Debian 11 |
 |---|---|---|
 | OS | Android 4.4.4 (KTU84P) | Debian 11 (bullseye) |
-| Kernel | 3.10 (Qualcomm fork) | 5.15 (mainline) |
+| Kernel | 3.10 (Qualcomm fork) | 6.6 (postmarketOS mainline) |
 | Root access | No | Yes (full root) |
 | Shell | Limited busybox | Full bash + GNU tools |
 | Package manager | None | apt |
@@ -327,12 +328,16 @@ docker run --rm --privileged -v $(pwd)/build/output:/output openstick-builder \
 
 ### After building: prepare for flash
 
-The build produces a **sparse image** (Android format, ~314 MB). The flash
-script needs a **raw image** (1:1 copy of the partition). Convert it:
+The build produces two images:
+- `rootfs.img` — sparse Android format (~370 MB), needs conversion to raw
+- `boot.img` — Android boot image with appended DTB (~7 MB), ready to flash
 
 ```bash
-# Convert sparse → raw (needed for EDL flash)
+# Convert rootfs sparse → raw (needed for EDL flash)
 simg2img build/output/rootfs.img flash/files/rootfs.raw
+
+# Copy boot image (already raw)
+cp build/output/boot.img flash/files/boot.img
 
 # Then flash as usual
 cd flash && bash flash-openstick.sh
@@ -371,8 +376,9 @@ The build bakes in cron scripts that run automatically:
 │   ├── checksums.sha256
 │   └── getprop.txt     # Stock Android system properties
 ├── build/
-│   ├── Dockerfile            # Docker build environment
-│   ├── build.sh              # Image build script
+│   ├── Dockerfile            # Docker build environment (cross-compiler, arm64 libs)
+│   ├── build.sh              # Image build script (kernel, rootfs, boot image, rmtfs)
+│   ├── scripts/mkbootimg     # AOSP mkbootimg for Android boot image creation
 │   ├── packages/             # Package group lists (.list files)
 │   │   ├── base.list         # Core packages (always installed)
 │   │   ├── monitoring.list   # Signal/connection monitoring
@@ -381,7 +387,7 @@ The build bakes in cron scripts that run automatically:
 │   │   └── vpn-netbird.list  # NetBird mesh VPN
 │   └── overlay/              # Files baked into the image
 │       ├── usr/local/bin/    # Monitoring scripts
-│       └── etc/              # Cron jobs, logrotate, SSH config
+│       └── etc/              # Cron jobs, logrotate, SSH, rmtfs.service, modem modules
 ├── backup/
 │   ├── partitions/           # Stock firmware + modem calibration backup
 │   ├── autosave_*/           # Auto-backups created by flash script (timestamped)
@@ -397,8 +403,8 @@ The build bakes in cron scripts that run automatically:
 │   │   ├── sbl1.mbn, rpm.mbn, tz.mbn     # Dragonboard firmware
 │   │   ├── qhypstub-test-signed.mbn      # Hypervisor stub
 │   │   ├── sbc_1.0_8016.bin              # CDT
-│   │   ├── boot-jz0145.img               # Linux kernel + JZ0145-v33 DTB
-│   │   └── rootfs.raw                    # Debian rootfs (raw image)
+│   │   ├── boot.img                      # 6.6 kernel + appended DTB (Android boot image)
+│   │   └── rootfs.raw                    # Debian rootfs (ext4, raw image)
 │   └── start.sh              # Original kinsamanka flash script (reference)
 ├── PLAN.md             # Detailed project plan + findings
 ├── FLASH-GUIDE.md      # Step-by-step flash guide

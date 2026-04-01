@@ -129,19 +129,20 @@ edl w aboot emmc_appsboot-test-signed.mbn
 ### Step 4: Flash Boot Image + Rootfs via EDL
 
 ```bash
-# Boot image with JZ0145-v33 DTB baked in (Android boot image format)
-edl w boot boot-jz0145.img
+# Boot image: 6.6 kernel with appended DTB (Android boot image format, ~7 MB)
+edl w boot boot.img
 
-# Debian rootfs (raw image, takes 2-5 minutes)
+# Debian rootfs (ext4, raw image, takes 2-5 minutes)
 edl w rootfs rootfs.raw
 ```
 
-**IMPORTANT**: Use `boot-jz0145.img` (with JZ0145-v33 DTB baked in), NOT
-`boot-ufi001c.img`. The JZ0145-v33 DTB provides correct SIM detection, LED
-control, and GPIO mappings for this board. The extlinux approach (reformatting
-boot to ext2 with extlinux.conf) broke boot because the Dragonboard aboot's
-fastboot interface is unreachable from the host, making recovery impossible
-without re-flashing via EDL.
+The boot image is built by the Docker build pipeline: the postmarketOS 6.6 kernel
+(vmlinuz) is concatenated with `msm8916-thwc-ufi001c.dtb` and packed into an
+Android boot image with mkbootimg. The Dragonboard aboot finds the DTB by scanning
+for the FDT magic (0xd00dfeed) after the gzip kernel data.
+
+The rootfs includes cross-compiled modem tools (rmtfs, qrtr-ns) and systemd
+services for automatic modem initialization at boot.
 
 ### Step 5: Restore Modem Calibration
 
@@ -178,7 +179,7 @@ sudo ip addr add 192.168.68.100/24 dev enxXXXXXXXXXXXX
 
 # SSH into the dongle (default password: openstick)
 ssh root@192.168.68.1
-# Linux openstick 5.15.0-handsomekernel+ ... aarch64 GNU/Linux
+# Linux openstick 6.6.0-msm8916 ... aarch64 GNU/Linux
 ```
 
 ## Post-Flash Configuration
@@ -198,24 +199,39 @@ sudo ip addr add 192.168.68.100/24 dev enxXXXXXXXXXXXX
 ssh root@192.168.68.1
 ```
 
-### 1. Copy device-specific modem firmware
+### 1. Copy device-specific modem firmware + NV storage
 
-The rootfs ships with generic MSM8916 modem firmware. For the modem to
-actually connect to LTE networks, you MUST copy the device-specific
-firmware from the backup modem partition:
+The modem needs two things from the device backup:
+- **Firmware blobs** — modem DSP code, WiFi firmware (from modem.bin FAT16 image)
+- **NV storage** — IMEI, RF calibration, carrier config (from modemst1/modemst2/fsg)
 
 ```bash
-# From the host, copy backup images to the dongle
-scp backup/partitions/modem.bin root@192.168.68.1:/tmp/
-scp backup/partitions/persist.bin root@192.168.68.1:/tmp/
+# From the host, extract modem firmware and copy to dongle
+# 1. Mount modem backup (FAT16 partition image) and extract firmware
+mkdir /tmp/modem_mnt
+sudo mount -o loop,ro backup/partitions/modem.bin /tmp/modem_mnt
+scp /tmp/modem_mnt/image/* root@192.168.68.1:/lib/firmware/
+sudo umount /tmp/modem_mnt
 
-# On the dongle (via SSH):
-mount /tmp/modem.bin /mnt && cp /mnt/image/m* /mnt/image/wc* /lib/firmware/ && umount /mnt
-mount /tmp/persist.bin /mnt && cp /mnt/WCNSS_qcom_wlan_nv.bin /lib/firmware/wlan/prima/ && umount /mnt
-rm /tmp/*.bin
+# 2. Copy NV storage files (modem EFS + golden copy)
+scp backup/partitions/modemst1.bin root@192.168.68.1:/boot/modem_fs1
+scp backup/partitions/modemst2.bin root@192.168.68.1:/boot/modem_fs2
+scp backup/partitions/fsg.bin root@192.168.68.1:/boot/modem_fsg
+
+# 3. Reboot to start modem with firmware + NV storage
+ssh root@192.168.68.1 reboot
 ```
 
-Without this step, `mmcli -m 0` shows `DeviceNotReady` errors.
+After reboot, rmtfs.service starts automatically, provides NV storage to the
+modem DSP, and the modem should respond to AT commands:
+```bash
+ssh root@192.168.68.1
+echo -e "ATI\r" > /dev/wwan0at0 && sleep 1 && cat /dev/wwan0at0
+# Should show: Manufacturer: QUALCOMM INCORPORATED, IMEI, firmware version
+```
+
+Without modem firmware, the modem DSP crashes in a loop. Without NV storage
+(modem_fs files), the modem boots but has no IMEI and can't register on networks.
 
 ### 2. Fix apt sources and set clock
 
@@ -269,17 +285,21 @@ nmcli connection add type wifi ifname wlan0 con-name hotspot \
 - Check if sbl1/aboot/hyp were flashed correctly via EDL
 
 ### Kernel boots but no USB network
-- DTB mismatch: make sure you used `boot-jz0145.img` (with JZ0145-v33 DTB),
-  NOT `boot-ufi001c.img` (UFI001C DTB)
+- Verify boot image was built with appended DTB (stock pmos msm8916-thwc-ufi001c.dtb)
+- Check UART serial console (115200 baud, 3.3V) for kernel panic messages
+- Common cause: /lib symlink broken (must be symlink to /usr/lib for usrmerge)
+
+### Modem not detected (mmcli -L shows nothing)
+- Verify modem firmware is in `/lib/firmware/` (modem.mdt, mba.mbn, wcnss.mdt, etc.)
+- Verify rmtfs is running: `systemctl status rmtfs`
+- Verify modem_fs files exist: `/boot/modem_fs1`, `/boot/modem_fs2`, `/boot/modem_fsg`
+- These must be copied from the device backup (modemst1.bin, modemst2.bin, fsg.bin)
+- Check `dmesg | grep remoteproc` — modem DSP should show "now up" without "fatal error"
 
 ### SIM not detected
-- With JZ0145-v33 DTB (`boot-jz0145.img`), SIM is detected reliably
-- If still not detected, try physically unplugging and replugging the dongle
-- Once detected, modem connects to LTE automatically
-
-### Modem shows DeviceNotReady
-- You must copy device-specific modem firmware from backup (see Post-Flash step 1)
-- The generic firmware in the rootfs does not work
+- Verify modem responds to AT commands: `echo -e "AT\r" > /dev/wwan0at0`
+- If `AT+CPIN?` returns "SIM not inserted", check physical SIM card
+- Some boards need a physical replug after first boot
 
 ### Fastboot not working (expected)
 - The Dragonboard aboot fastboot interface uses USB ID `18d1:d001` or `05c6:9091`
@@ -313,18 +333,25 @@ Configuration" section above.
 The `configure-dongle.sh` script automates all steps: modem firmware copy,
 apt sources fix, clock sync, SSH, NAT, WiFi, hostname, and APN configuration.
 
-### Why no extlinux / DTB patching?
+### Boot image format: appended DTB
 
-Earlier attempts used extlinux boot (reformatting the boot partition to ext2
-with extlinux.conf and a patched JZ0145-v33 DTB). This broke boot because
-if anything goes wrong, the only recovery path is via the Dragonboard aboot's
-fastboot interface, which uses USB ID `18d1:d001` / `05c6:9091` that the host
-`fastboot` tool cannot communicate with.
+The boot image uses the "appended DTB" format: the gzip-compressed kernel
+(vmlinuz) is concatenated with the flat device tree blob (.dtb), then packed
+into a standard Android boot image with mkbootimg. The Dragonboard aboot
+scans for the FDT magic byte (0xd00dfeed) after the gzip stream to find the DTB.
 
-The solution is `boot-jz0145.img` — an Android boot image with the JZ0145-v33
-DTB baked in. This works with the Dragonboard aboot (emmc_appsboot) and
-provides correct SIM detection, LED control, and GPIO mappings without
-needing extlinux or DTB patching at runtime.
+**Why not extlinux/lk2nd?** Extensive testing showed that lk2nd's ext2
+partition scanning doesn't work on this board (the boot partition split
+never happens, and the ext2 mount fails silently on all partitions).
+The QCDT DTB matching also failed because `board_hardware_id()` is unknown.
+The appended-DTB format bypasses all these issues.
+
+**Why not lk1st?** SBL1 rejects the test-signed lk1st binary. Only the
+stock Dragonboard emmc_appsboot (ELF format) is accepted by SBL1.
+
+**DTB choice:** The stock postmarketOS `msm8916-thwc-ufi001c.dtb` works for
+JZ0145-v33 boards. The custom `msm8916-jz01-45-v33.dtb` from OpenStick-Builder
+also boots but has `compatible = "thwc,ufi001c"` anyway.
 
 ## Modem Calibration (Auto-Backup)
 
@@ -394,10 +421,10 @@ multiple sticks in sequence is safe — each gets its own backup directory.
    `gpt_backup_proper.bin` (sector 7733215) for correct rootfs (3.6 GB) and
    correct backup header placement.
 
-3. **Use Android boot image with baked-in DTB**: `boot-jz0145.img` has the
-   JZ0145-v33 DTB compiled in. The extlinux approach (reformatting boot to
-   ext2) broke boot because recovery via fastboot is impossible on this board.
-   Keep the Android boot image format — it works with the Dragonboard aboot.
+3. **Appended DTB boot format**: Concatenate vmlinuz + DTB, pack with mkbootimg.
+   The Dragonboard aboot finds the DTB by scanning for FDT magic after the gzip
+   stream. lk2nd/extlinux doesn't work on this board (ext2 mount fails, QCDT
+   matching fails). lk1st is rejected by SBL1.
 
 4. **Backup everything first**: The modem calibration data (modemst1/2, fsc, fsg)
    AND the modem firmware partition are unique per device and cannot be regenerated.
@@ -414,10 +441,11 @@ multiple sticks in sequence is safe — each gets its own backup directory.
    crashes immediately under the stock Qualcomm hypervisor. The Dragonboard
    firmware stack (with qhypstub) is mandatory.
 
-8. **SIM detection depends on DTB**: With UFI001C DTB, SIM is often not detected.
-   With JZ0145-v33 DTB (baked into `boot-jz0145.img`), SIM is detected reliably.
-   Sometimes requires a physical replug. Once detected, modem connects to LTE
-   automatically.
+8. **Modem needs rmtfs for NV storage**: The modem DSP accesses its calibration
+   data (IMEI, RF cal) via rmtfs (remote filesystem service). Without rmtfs running
+   BEFORE the modem starts, the modem enters a crash loop (`fs_device_efs_rmts.c`).
+   rmtfs needs modem_fs1/fs2/fsg files in `/boot/` (copied from modemst1/modemst2/fsg
+   backup partitions). The build includes rmtfs.service that starts automatically.
 
 9. **Watchdog causes reboot loops**: Hardware watchdog + connection watchdog
    caused reboot loops because the LTE modem needs 60-90s to register after
@@ -448,15 +476,16 @@ multiple sticks in sequence is safe — each gets its own backup directory.
     boot, assigns IP `192.168.68.1`, and `dnsmasq` serves DHCP. Default
     root password is `openstick`. All management is via SSH.
 
-16. **Android boot images need initramfs**: The Dragonboard aboot loads an
-    Android boot image (kernel + ramdisk). If the ramdisk is missing or
-    empty (`/dev/null`), the kernel boots but cannot mount the root
-    filesystem and the dongle appears dead on USB. The working
-    `boot-jz01.img` has a 6.3 MB gzip initramfs — always include one.
+16. **No initramfs needed with 6.6 kernel**: The postmarketOS 6.6 kernel has
+    ext4 built-in and can mount the rootfs directly. The old 5.15 kernel
+    needed a 6.3 MB initramfs. With 6.6, the boot image is just kernel + DTB.
 
-17. **Kernel modules must match the boot image kernel**: The 5.15-handsomekernel
-    boot image has netfilter compiled as modules (`=m`) but the `.ko` files
-    were never shipped. Without `/lib/modules/`, `iptables` and `nftables`
-    cannot load — NAT does not work. The postmarketOS 6.6 kernel includes
-    all modules in its `.apk` package. When switching kernels, always include
-    the matching modules in the rootfs overlay (`build/overlay/lib/modules/`).
+17. **usrmerge /lib symlink is critical**: The postmarketOS kernel .apk creates
+    `/lib/modules/` as a real directory, replacing Debian bullseye's `/lib → /usr/lib`
+    symlink. Without this symlink, the dynamic linker `/lib/ld-linux-aarch64.so.1`
+    is missing and NO ELF binary can execute (kernel panic: "init failed error -2").
+    The build.sh fixes this automatically after kernel extraction.
+
+18. **UART serial console**: 3.3V UART directly from PCB pads. FTDI FT232R
+    adapter at 115200 baud. Essential for debugging boot issues — without it,
+    kernel panics are invisible (no USB output until systemd starts).
