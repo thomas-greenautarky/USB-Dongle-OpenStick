@@ -168,6 +168,12 @@ if [ -d "$CHROOT/lib" ] && [ ! -L "$CHROOT/lib" ]; then
     ln -s usr/lib "$CHROOT/lib"
 fi
 
+# Copy board-specific DTB (JZ0145-v33 — required for SIM card detection)
+if [ -f /build/boot/msm8916-jz01-45-v33.dtb ]; then
+    mkdir -p "$CHROOT/boot/dtbs/qcom"
+    cp /build/boot/msm8916-jz01-45-v33.dtb "$CHROOT/boot/dtbs/qcom/"
+fi
+
 # ─── Cross-compile modem support tools (qrtr-ns, rmtfs) ────────────────────
 
 log "Building qrtr-ns and rmtfs for arm64..."
@@ -304,7 +310,8 @@ img2simg "$WORKDIR/rootfs.raw" "$OUTPUT_DIR/rootfs.img"
 
 log "Creating boot image (appended DTB)..."
 
-DTB="$CHROOT/boot/dtbs/qcom/msm8916-thwc-ufi001c.dtb"
+# Use JZ0145-v33 DTB — stock UFI001C DTB doesn't detect SIM card on JZ0145 boards
+DTB="$CHROOT/boot/dtbs/qcom/msm8916-jz01-45-v33.dtb"
 [ -f "$DTB" ] || err "DTB not found: $DTB"
 
 cat "$CHROOT/boot/vmlinuz" "$DTB" > "$WORKDIR/vmlinuz-dtb"
