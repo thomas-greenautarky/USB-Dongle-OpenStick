@@ -203,9 +203,12 @@ cd /build
 # ─── Install modem firmware (generic, same for all dongles of this type) ────
 
 if [ -d /build/firmware ] && [ -f /build/firmware/modem.mdt ]; then
-    log "Installing modem firmware (53 files from stock backup)..."
-    mkdir -p "$CHROOT/lib/firmware"
-    cp /build/firmware/* "$CHROOT/lib/firmware/"
+    log "Installing modem + WiFi firmware from stock backup..."
+    mkdir -p "$CHROOT/lib/firmware/wlan/prima"
+    cp /build/firmware/*.mdt /build/firmware/*.mbn /build/firmware/*.b* "$CHROOT/lib/firmware/" 2>/dev/null
+    # WiFi NV calibration (device-specific RF cal for wcn36xx)
+    [ -f /build/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin ] && \
+        cp /build/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin "$CHROOT/lib/firmware/wlan/prima/"
 fi
 
 # ─── Install NetBird VPN if requested ────────────────────────────────────────

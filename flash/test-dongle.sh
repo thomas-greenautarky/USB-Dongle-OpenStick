@@ -140,16 +140,23 @@ FWD=$(ssh_cmd "sysctl -n net.ipv4.ip_forward")
 echo ""
 echo "── 7. Modem ──"
 
-# Firmware files
+# Firmware files (modem + WiFi)
 FW_OK=true
-for f in modem.mdt mba.mbn; do
+for f in modem.mdt mba.mbn wcnss.mdt; do
     if ssh_cmd "test -f /lib/firmware/$f"; then
         pass "Firmware: $f"
     else
-        skip "Firmware: $f" "not copied (post-flash step)"
+        fail "Firmware: $f" "missing (should be in build)"
         FW_OK=false
     fi
 done
+
+# WiFi NV calibration
+if ssh_cmd "test -f /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin"; then
+    pass "WiFi NV: WCNSS_qcom_wlan_nv.bin"
+else
+    fail "WiFi NV" "missing /lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin"
+fi
 
 # NV storage
 for f in modem_fs1 modem_fs2 modem_fsg; do
@@ -190,6 +197,13 @@ if [ -n "$SIM_STATE" ] && [ "$SIM_STATE" != "--" ]; then
     pass "SIM card (detected)"
 else
     skip "SIM card" "not detected"
+fi
+
+# WiFi interface (wcn36xx)
+if ssh_cmd "test -d /sys/class/net/wlan0"; then
+    pass "WiFi interface (wlan0)"
+else
+    fail "WiFi interface" "wlan0 not present (check wcnss firmware + NV cal)"
 fi
 
 # ModemManager detection
@@ -261,10 +275,9 @@ fi
 IPTREST=$(ssh_cmd "systemctl is-active iptables-restore 2>/dev/null")
 [[ "$IPTREST" == "active" ]] && pass "iptables-restore.service" || fail "iptables-restore" "$IPTREST"
 
-# modem-autoconnect service
+# modem-autoconnect service (active=running, inactive=completed successfully, activating=still working)
 AUTOCONN=$(ssh_cmd "systemctl is-active modem-autoconnect 2>/dev/null")
-[[ "$AUTOCONN" == "active" ]] && pass "modem-autoconnect.service" || \
-    { [[ "$AUTOCONN" == "inactive" ]] && pass "modem-autoconnect.service (completed)" || fail "modem-autoconnect" "$AUTOCONN"; }
+[[ "$AUTOCONN" =~ active|inactive|activating ]] && pass "modem-autoconnect.service ($AUTOCONN)" || fail "modem-autoconnect" "$AUTOCONN"
 
 # clock-sync service
 CLOCK=$(ssh_cmd "systemctl is-active clock-sync 2>/dev/null")
