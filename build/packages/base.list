@@ -18,6 +18,7 @@ network-manager
 wpasupplicant
 bridge-utils
 curl
+ca-certificates
 
 # Modem
 modemmanager

@@ -211,20 +211,22 @@ if [ -d /build/firmware ] && [ -f /build/firmware/modem.mdt ]; then
         cp /build/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin "$CHROOT/lib/firmware/wlan/prima/"
 fi
 
-# ─── Install NetBird VPN if requested ────────────────────────────────────────
+# ─── Install NetBird VPN (always, setup key provided during provisioning) ───
 
-if [ "$INSTALL_VPN" = "netbird" ]; then
-    log "Installing NetBird VPN..."
-    cat > "$CHROOT/install-vpn.sh" << 'VPNEOF'
+log "Installing NetBird VPN..."
+cat > "$CHROOT/install-vpn.sh" << 'VPNEOF'
 #!/bin/sh -e
 export DEBIAN_FRONTEND=noninteractive
 curl -fsSL https://pkgs.netbird.io/install.sh | bash
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 VPNEOF
-    chroot "$CHROOT" qemu-aarch64-static /bin/sh /install-vpn.sh
-    rm -f "$CHROOT/install-vpn.sh"
+if chroot "$CHROOT" qemu-aarch64-static /bin/sh /install-vpn.sh; then
+    log "NetBird installed"
+else
+    log "NetBird install failed (non-fatal, continuing)"
 fi
+rm -f "$CHROOT/install-vpn.sh"
 
 # ─── Apply overlay ──────────────────────────────────────────────────────────
 
