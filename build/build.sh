@@ -263,6 +263,18 @@ if [ -f "$CHROOT/etc/systemd/system/rmtfs.service" ]; then
         "$CHROOT/etc/systemd/system/multi-user.target.wants/rmtfs.service"
 fi
 
+# Enable modem auto-connect (LTE + wwan0 IP config on boot)
+if [ -f "$CHROOT/etc/systemd/system/modem-autoconnect.service" ]; then
+    ln -sf /etc/systemd/system/modem-autoconnect.service \
+        "$CHROOT/etc/systemd/system/multi-user.target.wants/modem-autoconnect.service"
+fi
+
+# Enable clock sync (HTTP Date header, runs after LTE connects)
+if [ -f "$CHROOT/etc/systemd/system/clock-sync.service" ]; then
+    ln -sf /etc/systemd/system/clock-sync.service \
+        "$CHROOT/etc/systemd/system/multi-user.target.wants/clock-sync.service"
+fi
+
 # Enable dnsmasq
 mkdir -p "$CHROOT/etc/systemd/system/multi-user.target.wants"
 ln -sf /lib/systemd/system/dnsmasq.service \

@@ -1,0 +1,6 @@
+# LTE Access Point Name — set to your carrier's APN
+# Common APNs:
+#   internet.telekom  (Telekom DE)
+#   web.vodafone.de   (Vodafone DE)
+#   internet          (generic, works for many carriers)
+internet

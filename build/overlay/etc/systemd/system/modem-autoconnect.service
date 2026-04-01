@@ -1,0 +1,13 @@
+[Unit]
+Description=Auto-connect LTE modem and configure wwan0
+After=ModemManager.service rmtfs.service
+Wants=ModemManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/modem-autoconnect.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
