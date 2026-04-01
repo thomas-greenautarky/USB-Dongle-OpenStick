@@ -70,33 +70,27 @@ See [FLASH-GUIDE.md](FLASH-GUIDE.md) for the detailed procedure.
 - [x] Phase 1: Full firmware backup via EDL
 - [x] Phase 2: Board identified as JZ0145-v33 (xiaoxun,jz0145-v33)
 - [x] Phase 3: Boot chain analysis and flash method discovery
-- [x] Phase 4: Flash OpenStick — Debian 11 running
+- [x] Phase 4: Flash OpenStick — Debian 12 (bookworm) running
 - [x] Phase 5: LTE connected, NAT gateway working, SSH access
 - [x] Phase 6: Provisioning scripts (flash-openstick.sh + configure-dongle.sh)
-- [ ] Phase 7: Home Assistant integration
+- [x] Phase 7: Full LTE data via ModemManager 1.20 + BAM-DMUX
+- [ ] Phase 8: Home Assistant integration
 
 ## TODO
 
-- [ ] **Web GUI**: management interface for WiFi, APN, signal, data usage.
-      The stock firmware had a Vue.js web UI — need to build a replacement.
+- [ ] **Modem auto-connect on boot**: `mmcli --simple-connect` needs to run after
+      modem registers. Needs a systemd service or NetworkManager connection profile.
+- [ ] **NAT persistence testing**: iptables-restore service set up but needs
+      validation across multiple reboots.
 - [ ] **Hardware watchdog**: needs boot grace period testing (180s) before
-      deployment. Caused reboot loops in testing. Connection watchdog must use
-      `systemctl restart ModemManager` (NOT `mmcli --disable/--enable`).
+      deployment. Connection watchdog must use `systemctl restart ModemManager`.
+- [ ] **Web GUI**: management interface for WiFi, APN, signal, data usage.
 - [x] **WiFi PSK derivation**: PSK derived from SSID using HMAC-SHA256 with shared
       secret. See [WiFi PSK Derivation](#wifi-psk-derivation) below.
 - [x] **SSID schema**: `GA-XXXX` format using last 4 digits of IMEI for fleet uniqueness.
 - [ ] **Fleet batch provisioning**: flash + configure multiple dongles in sequence.
-      Scripts exist but batch workflow not tested.
 - [ ] **Modem firmware in build**: currently copied post-flash from backup.
-      Integrate into Docker build process for reproducible images.
-- [ ] **SIM detection reliability**: intermittent on some boots, sometimes needs
-      physical replug. With JZ0145-v33 DTB it's more reliable.
-- [ ] **IPv4 vs IPv6**: carrier-dependent. Tango gives IPv6-only, POST gives IPv4.
-      APN config may need to be carrier-specific.
-- [ ] **NAT persistence testing**: iptables-restore service set up but needs
-      validation across multiple reboots.
-- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA, failover,
-      signal strength sensors.
+- [ ] **Home Assistant integration**: test RNDIS auto-detection by HA, failover.
 
 ## WiFi PSK Derivation
 
@@ -184,11 +178,11 @@ After a successful flash, the dongle runs:
 
 | Component | Details |
 |---|---|
-| OS | Debian 11 (bullseye), aarch64 |
+| OS | Debian 12 (bookworm), aarch64 |
 | Kernel | 6.6.0-msm8916 (postmarketOS, appended DTB boot) |
 | RAM | 382 MB (191 MB free) |
 | Storage | 3.5 GB rootfs (2.8 GB free) |
-| Modem | Qualcomm LTE, managed via ModemManager |
+| Modem | Qualcomm LTE via ModemManager 1.20 + BAM-DMUX + rmtfs |
 | WiFi | wcn36xx (AP mode via hostapd/NetworkManager) |
 | USB | RNDIS gadget at 192.168.68.1 |
 | SSH | OpenSSH server on port 22 |
@@ -293,7 +287,7 @@ that the stock Qualcomm hypervisor does not provide.
 
 | | Stock Android 4.4 | OpenStick Debian 11 |
 |---|---|---|
-| OS | Android 4.4.4 (KTU84P) | Debian 11 (bullseye) |
+| OS | Android 4.4.4 (KTU84P) | Debian 12 (bookworm) |
 | Kernel | 3.10 (Qualcomm fork) | 6.6 (postmarketOS mainline) |
 | Root access | No | Yes (full root) |
 | Shell | Limited busybox | Full bash + GNU tools |

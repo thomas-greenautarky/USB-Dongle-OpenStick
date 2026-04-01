@@ -233,14 +233,10 @@ echo -e "ATI\r" > /dev/wwan0at0 && sleep 1 && cat /dev/wwan0at0
 Without modem firmware, the modem DSP crashes in a loop. Without NV storage
 (modem_fs files), the modem boots but has no IMEI and can't register on networks.
 
-### 2. Fix apt sources and set clock
+### 2. Set system clock
 
 ```bash
-# Fix apt sources (Debian 11 bullseye is archived)
-sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list
-sed -i '/security.debian.org/d' /etc/apt/sources.list
-
-# Set system clock (no RTC battery, defaults to 2021)
+# Set system clock (no RTC battery, defaults to 1970)
 date -s "$(wget -qO- --save-headers http://google.com 2>&1 | grep -i '^Date:' | cut -d' ' -f2-)"
 ```
 
@@ -250,10 +246,32 @@ date -s "$(wget -qO- --save-headers http://google.com 2>&1 | grep -i '^Date:' | 
 passwd root
 ```
 
-### 4. Configure LTE
+### 4. Configure LTE (ModemManager 1.20)
+
 ```bash
-mmcli -m 0 --simple-connect="apn=YOUR_APN"
+# Wait for modem to register (~30-90s after boot)
+mmcli -m 0  # Should show state: registered
+
+# Connect (replace with your carrier's APN)
+mmcli -m 0 --simple-connect="apn=internet.telekom"
+# successfully connected the modem
+
+# Get bearer details (IP, gateway, DNS)
+mmcli -b 0
+
+# Configure wwan0 with bearer IP settings
+ip link set wwan0 up
+ip addr add <IP>/<PREFIX> dev wwan0
+ip route add default via <GATEWAY> dev wwan0
+echo "nameserver <DNS>" > /etc/resolv.conf
+
+# Verify
+ping -c 3 8.8.8.8
 ```
+
+ModemManager 1.20 handles the full WWAN/QMI/BAM-DMUX setup automatically.
+The modem firmware (rmtfs), NV storage, and data channel negotiation all
+happen through the WWAN subsystem without manual intervention.
 
 ### 5. NAT gateway (USB → LTE forwarding)
 
@@ -468,8 +486,9 @@ multiple sticks in sequence is safe — each gets its own backup directory.
 13. **System clock must be set**: The dongle has no RTC battery. Wrong date
     (default: 2021) can cause auth timeouts. Set the date on first boot.
 
-14. **Fix apt sources for Debian 11**: Bullseye is archived; change
-    `deb.debian.org` to `archive.debian.org` and remove the security line.
+14. **Debian 12 (bookworm) is required**: ModemManager 1.20 needs GLIBC 2.34+
+    which is only available in bookworm. Bullseye's MM 1.14 cannot handle the
+    WWAN subsystem — BAM-DMUX data channels never open.
 
 15. **No ADB needed**: The dongle uses RNDIS USB networking + SSH instead
     of Android ADB. The `usb-gadget.service` creates an RNDIS gadget at
