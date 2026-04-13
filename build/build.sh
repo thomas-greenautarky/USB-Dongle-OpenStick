@@ -8,9 +8,8 @@
 #
 # Usage (via Docker with options):
 #   docker run --rm --privileged -v $(pwd)/build/output:/output openstick-builder \
-#     --packages "base monitoring diagnostics watchdog" \
-#     --hostname openstick \
-#     --vpn netbird
+#     --packages "base monitoring diagnostics watchdog vpn-netbird" \
+#     --hostname openstick
 #
 # Package lists (in build/packages/):
 #   base.list         — Always installed (networking, modem, SSH, tools)
@@ -30,9 +29,8 @@ err() { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
-PACKAGE_GROUPS="base monitoring watchdog"
+PACKAGE_GROUPS="base monitoring watchdog vpn-netbird"
 HOST_NAME="openstick"
-INSTALL_VPN=""
 OUTPUT_DIR="/output"
 RELEASE="bookworm"
 ROOTFS_SIZE="1536M"
@@ -43,19 +41,17 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --packages)  PACKAGE_GROUPS="$2"; shift 2 ;;
         --hostname)  HOST_NAME="$2"; shift 2 ;;
-        --vpn)       INSTALL_VPN="$2"; shift 2 ;;
         --output)    OUTPUT_DIR="$2"; shift 2 ;;
         --release)   RELEASE="$2"; shift 2 ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  --packages \"list\"   Package groups to install (default: base monitoring watchdog)"
-            echo "                      Available: base monitoring diagnostics watchdog"
+            echo "  --packages \"list\"   Package groups (default: base monitoring watchdog vpn-netbird)"
+            echo "                      Available: base monitoring diagnostics watchdog vpn-netbird"
             echo "  --hostname NAME     Set hostname (default: openstick)"
-            echo "  --vpn netbird       Install NetBird VPN"
             echo "  --output DIR        Output directory (default: /output)"
-            echo "  --release NAME      Debian release (default: bullseye)"
+            echo "  --release NAME      Debian release (default: bookworm)"
             exit 0
             ;;
         *) err "Unknown option: $1" ;;
@@ -68,7 +64,6 @@ CHROOT="$WORKDIR/rootfs"
 log "Build configuration:"
 echo "  Package groups: $PACKAGE_GROUPS"
 echo "  Hostname:       $HOST_NAME"
-echo "  VPN:            ${INSTALL_VPN:-none}"
 echo "  Release:        $RELEASE"
 echo "  Output:         $OUTPUT_DIR"
 
@@ -107,6 +102,7 @@ deb http://deb.debian.org/debian-security/ ${RELEASE}-security main contrib non-
 deb http://deb.debian.org/debian ${RELEASE}-updates main contrib non-free non-free-firmware
 EOF
 
+
 # ─── Mount for chroot ───────────────────────────────────────────────────────
 
 mount -t proc proc "$CHROOT/proc/"
@@ -128,12 +124,29 @@ echo "locales locales/default_environment_locale select en_US.UTF-8" | debconf-s
 echo "locales locales/locales_to_be_generated multiselect en_US.UTF-8 UTF-8" | debconf-set-selections
 rm -f /etc/locale.gen
 
+# Prevent any service from starting during install (we're in a chroot)
+ln -sf /bin/true /usr/sbin/policy-rc.d
+
+# Add third-party apt repos needed by package groups
+case " $PACKAGES " in
+    *netbird*)
+        apt-get update -qq
+        apt-get install -qq -y --no-install-recommends wget gnupg ca-certificates
+        wget -qO- https://pkgs.netbird.io/debian/public.key \
+            | gpg --dearmor -o /usr/share/keyrings/netbird-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/netbird-archive-keyring.gpg] https://pkgs.netbird.io/debian stable main" \
+            > /etc/apt/sources.list.d/netbird.list
+        ;;
+esac
+
 apt-get update -qq
 apt-get upgrade -qq -y
 apt-get install -qq -y --no-install-recommends $PACKAGES
 apt-get autoremove -qq -y
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+
+rm -f /usr/sbin/policy-rc.d
 
 # Root account: default password (change during provisioning)
 echo 'root:openstick' | chpasswd
@@ -210,23 +223,6 @@ if [ -d /build/firmware ] && [ -f /build/firmware/modem.mdt ]; then
     [ -f /build/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin ] && \
         cp /build/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin "$CHROOT/lib/firmware/wlan/prima/"
 fi
-
-# ─── Install NetBird VPN (always, setup key provided during provisioning) ───
-
-log "Installing NetBird VPN..."
-cat > "$CHROOT/install-vpn.sh" << 'VPNEOF'
-#!/bin/sh -e
-export DEBIAN_FRONTEND=noninteractive
-curl -fsSL https://pkgs.netbird.io/install.sh | bash
-apt-get clean
-rm -rf /var/lib/apt/lists/*
-VPNEOF
-if chroot "$CHROOT" qemu-aarch64-static /bin/sh /install-vpn.sh; then
-    log "NetBird installed"
-else
-    log "NetBird install failed (non-fatal, continuing)"
-fi
-rm -f "$CHROOT/install-vpn.sh"
 
 # ─── Apply overlay ──────────────────────────────────────────────────────────
 
@@ -314,8 +310,19 @@ echo "net.ipv4.ip_forward=1" > "$CHROOT/etc/sysctl.d/99-forward.conf"
 
 echo -n > "$CHROOT/root/.bash_history"
 
-for a in proc sys dev/pts dev run; do
-    umount "$CHROOT/$a"
+# Stop any services that were started during package install (e.g. NetBird)
+# so /dev and /proc can be cleanly unmounted
+chroot "$CHROOT" qemu-aarch64-static /bin/sh -c "
+    # Stop NetBird and any other daemons started by dpkg postinst
+    /etc/init.d/netbird stop 2>/dev/null || true
+    killall netbird 2>/dev/null; sleep 1; killall -9 netbird 2>/dev/null
+    # Kill all remaining processes in the chroot
+    fuser -km /proc 2>/dev/null
+" || true
+sleep 2
+
+for a in run dev/pts dev sys proc; do
+    umount "$CHROOT/$a" 2>/dev/null || umount -l "$CHROOT/$a"
 done
 
 # ─── Create images ──────────────────────────────────────────────────────────
@@ -327,7 +334,32 @@ truncate -s "$ROOTFS_SIZE" "$WORKDIR/rootfs.raw"
 mkfs.ext4 "$WORKDIR/rootfs.raw"
 mount "$WORKDIR/rootfs.raw" "$WORKDIR/mnt"
 cp -a "$CHROOT"/* "$WORKDIR/mnt/" 2>/dev/null || true
+
+# ─── Verify image contents before finalizing ────────────────────────────────
+
+log "Verifying rootfs contents..."
+VERIFY_FAIL=0
+
+for bin in usr/local/bin/modem-autoconnect.sh usr/local/bin/rmtfs usr/local/bin/qrtr-ns usr/sbin/sshd; do
+    if [ -f "$WORKDIR/mnt/$bin" ]; then
+        log "  OK: /$bin"
+    else
+        log "  MISSING: /$bin"
+        VERIFY_FAIL=1
+    fi
+done
+if echo "$PACKAGE_GROUPS" | grep -q "vpn-netbird"; then
+    if [ -f "$WORKDIR/mnt/usr/bin/netbird" ]; then
+        log "  OK: /usr/bin/netbird"
+    else
+        log "  MISSING: /usr/bin/netbird (vpn-netbird package group)"
+        VERIFY_FAIL=1
+    fi
+fi
+
 umount "$WORKDIR/mnt"
+
+[ "$VERIFY_FAIL" -eq 0 ] || err "Rootfs verification failed — aborting"
 
 # Create sparse image for EDL flash
 img2simg "$WORKDIR/rootfs.raw" "$OUTPUT_DIR/rootfs.img"

@@ -66,14 +66,17 @@ if [ "$STATE" != "connected" ]; then
     sleep 3
 fi
 
-# Find the data bearer (simple-connect creates a new one; initial-attach bearer has no IP)
-BEARER_PATH=$(mmcli -m 0 -K 2>/dev/null | grep "modem.generic.bearers.value" | tail -1 | awk -F': ' '{print $2}' | xargs)
-BEARER_IDX=$(echo "$BEARER_PATH" | grep -o '[0-9]*$')
-BEARER_IDX="${BEARER_IDX:-0}"
+# Find the connected data bearer (there may be multiple — pick the one that is actually connected)
+BEARER_IDX=""
+for bp in $(mmcli -m 0 -K 2>/dev/null | grep "modem.generic.bearers.value" | awk -F': ' '{print $2}' | xargs); do
+    idx=$(echo "$bp" | grep -o '[0-9]*$')
+    if mmcli -b "$idx" 2>/dev/null | grep -q "connected.*yes"; then
+        BEARER_IDX="$idx"
+        break
+    fi
+done
+[ -n "$BEARER_IDX" ] || { log "ERROR: no connected bearer found"; exit 1; }
 log "Using bearer $BEARER_IDX"
-
-BEARER=$(mmcli -b "$BEARER_IDX" 2>/dev/null)
-echo "$BEARER" | grep -q "connected.*yes" || { log "ERROR: bearer $BEARER_IDX not connected"; exit 1; }
 
 BEARER_K=$(mmcli -b "$BEARER_IDX" -K 2>/dev/null)
 IP=$(echo "$BEARER_K" | grep "bearer.ipv4-config.address" | awk -F': ' '{print $2}' | xargs)

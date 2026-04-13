@@ -1,4 +1,3 @@
-# NetBird VPN — optional
-# Mesh VPN for remote management of deployed dongles
-# Note: NetBird is installed from their repo, not Debian repos
-# This file is a marker — the install is handled in setup.sh
+# NetBird VPN — mesh VPN for remote management of deployed dongles
+# Requires NetBird apt repo (added automatically by build.sh)
+netbird
