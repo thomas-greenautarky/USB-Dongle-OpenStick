@@ -384,6 +384,17 @@ python3 /build/scripts/mkbootimg \
     --header_version 0 \
     -o "$OUTPUT_DIR/boot.img"
 
+# ─── Copy to flash directory ─────────────────────────────────────────────────
+
+FLASH_DIR="/build/../flash/files"
+if [ -d "$FLASH_DIR" ]; then
+    log "Copying images to flash/files/..."
+    simg2img "$OUTPUT_DIR/rootfs.img" "$FLASH_DIR/rootfs.raw"
+    cp "$OUTPUT_DIR/boot.img" "$FLASH_DIR/boot.img"
+    log "  rootfs.raw: $(du -h "$FLASH_DIR/rootfs.raw" | cut -f1)"
+    log "  boot.img:   $(du -h "$FLASH_DIR/boot.img" | cut -f1)"
+fi
+
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 
 rm -rf "$WORKDIR"
