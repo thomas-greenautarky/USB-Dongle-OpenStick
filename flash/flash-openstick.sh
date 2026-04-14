@@ -29,12 +29,19 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILES_DIR="$SCRIPT_DIR/files"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
+LOG_DIR="$SCRIPT_DIR/../logs"
 
 # Backup GPT sector for 4GB eMMC (end of disk)
 BACKUP_GPT_SECTOR=7733215
 
+# Expected dongle hardware (Qualcomm MSM8916 / MDM9x07 based UFI sticks)
+EXPECTED_PLATFORM="8916"
+
 # Modem calibration partitions (device-specific, contain IMEI + RF calibration)
 MODEM_PARTITIONS=(sec fsc fsg modemst1 modemst2)
+
+# Boot partitions to backup (for full restore if new image doesn't boot)
+BOOT_PARTITIONS=(sbl1 rpm tz hyp cdt aboot boot rootfs)
 
 # Required flash files
 REQUIRED_FILES=(
@@ -99,6 +106,39 @@ done
 lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found after 60s"
 log "EDL device detected."
 
+# ─── Logging ───────────────────────────────────────────────────────────────
+mkdir -p "$LOG_DIR"
+LOGFILE="$LOG_DIR/flash_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOGFILE") 2>&1
+log "Logging to: $LOGFILE"
+
+# ─── Step 1b: Identify dongle hardware ─────────────────────────────────────
+
+log "Identifying dongle hardware..."
+EDL_INFO=$(edl printgpt 2>&1 || true)
+echo "$EDL_INFO" >> "$LOGFILE"
+
+# Check platform via chipset ID in edl output
+if echo "$EDL_INFO" | grep -qi "$EXPECTED_PLATFORM"; then
+    log "  Platform: MSM$EXPECTED_PLATFORM (OK)"
+elif echo "$EDL_INFO" | grep -qi "msm\|mdm\|sdx"; then
+    DETECTED=$(echo "$EDL_INFO" | grep -oi 'msm[0-9]*\|mdm[0-9]*\|sdx[0-9]*' | head -1)
+    warn "  Unexpected platform: $DETECTED (expected MSM$EXPECTED_PLATFORM)"
+    echo ""
+    echo -ne "${YELLOW}[!]${NC} This dongle may not be compatible. Continue? [y/N] "
+    read -r CONTINUE
+    [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted by user."
+else
+    warn "  Could not detect platform from EDL info"
+fi
+
+# Read and log partition table
+PARTITION_LIST=$(edl printgpt 2>&1 | grep -E "^Part|Name" || true)
+if [ -n "$PARTITION_LIST" ]; then
+    log "  Partition table:"
+    echo "$PARTITION_LIST" | while read -r line; do log "    $line"; done
+fi
+
 # ─── Step 2: Auto-backup modem calibration ──────────────────────────────────
 # Each dongle has unique IMEI + RF calibration data in these partitions.
 # We read them BEFORE flashing so they can be restored afterwards.
@@ -154,8 +194,39 @@ if [ ! -f "$BACKUP_DIR/sec.bin" ] && [ "$VALID_BACKUPS" -eq "${#MODEM_PARTITIONS
     cp "$AUTOSAVE_DIR"/*.bin "$BACKUP_DIR/"
 fi
 
+# ─── Step 2b: Full partition backup (for rollback if new image doesn't boot) ─
+
+log "Backing up original boot partitions (for rollback)..."
+FULL_BACKUP_OK=true
+for part in "${BOOT_PARTITIONS[@]}"; do
+    if [ -f "$AUTOSAVE_DIR/${part}.bin" ]; then
+        log "  $part already saved"
+    else
+        log "  Reading $part..."
+        if edl r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
+            log "  Saved $part ($(du -h "$AUTOSAVE_DIR/${part}.bin" | cut -f1))"
+        else
+            warn "  Failed to read $part"
+            FULL_BACKUP_OK=false
+        fi
+    fi
+done
+
+if $FULL_BACKUP_OK; then
+    log "Full backup complete: $AUTOSAVE_DIR"
+    log "  To restore this dongle to its original state:"
+    log "    bash restore-dongle.sh $AUTOSAVE_DIR"
+else
+    warn "Some boot partitions could not be backed up."
+    warn "Rollback may not be possible if the new image doesn't boot."
+    echo ""
+    echo -ne "${YELLOW}[!]${NC} Continue anyway? [y/N] "
+    read -r CONTINUE
+    [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted by user."
+fi
+
 echo ""
-log "Modem calibration secured. Proceeding with flash..."
+log "Backup secured. Proceeding with flash..."
 echo ""
 
 # ─── Step 3: Write split GPT via EDL ────────────────────────────────────────
@@ -203,12 +274,25 @@ sleep 45
 
 # Check if RNDIS gadget appears (Debian with USB networking)
 if ! lsusb 2>/dev/null | grep -q "1d6b:0104"; then
-    warn "RNDIS gadget not detected after 45s. The device may need more time to boot."
-    warn "Check: lsusb | grep 1d6b:0104"
-    warn "If the device does not boot, re-enter EDL (reset button + USB plug)"
+    warn "RNDIS gadget not detected after 45s."
     echo ""
-    log "Modem calibration backup saved in: $RESTORE_DIR"
-    exit 1
+    warn "The dongle sometimes stays in EDL mode after flashing."
+    warn "To fix this:"
+    warn "  1. Unplug the dongle from USB"
+    warn "  2. Wait 3 seconds"
+    warn "  3. Plug it back in (do NOT hold the reset button)"
+    echo ""
+    echo -ne "${GREEN}[+]${NC} Press Enter after re-plugging the dongle..."
+    read -r
+    log "Waiting for device to boot (60s)..."
+    for i in $(seq 1 12); do
+        lsusb 2>/dev/null | grep -q "1d6b:0104" && break
+        sleep 5
+    done
+fi
+
+if ! lsusb 2>/dev/null | grep -q "1d6b:0104"; then
+    err "RNDIS gadget still not detected. Device did not boot. Check hardware."
 fi
 
 log "Device booted! RNDIS USB gadget detected."
