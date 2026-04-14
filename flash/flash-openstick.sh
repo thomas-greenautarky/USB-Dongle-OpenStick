@@ -31,8 +31,7 @@ FILES_DIR="$SCRIPT_DIR/files"
 BACKUP_DIR="$SCRIPT_DIR/../backup/partitions"
 LOG_DIR="$SCRIPT_DIR/../logs"
 
-# Backup GPT sector for 4GB eMMC (end of disk)
-BACKUP_GPT_SECTOR=7733215
+# Backup GPT sector — calculated dynamically from disk size (see Step 3)
 
 # Expected dongle hardware (Qualcomm MSM8916 / MDM9x07 based UFI sticks)
 EXPECTED_PLATFORM="8916"
@@ -230,6 +229,27 @@ log "Backup secured. Proceeding with flash..."
 echo ""
 
 # ─── Step 3: Write split GPT via EDL ────────────────────────────────────────
+
+# Read disk size to calculate backup GPT position dynamically.
+# The backup GPT must be at the very end of the disk. Its position varies
+# by eMMC size (3.73 GB vs 3.81 GB etc.), so we cannot hardcode it.
+log "Reading disk size..."
+DISK_INFO=$(edl printgpt 2>&1 | grep -i "Total disk size" || true)
+TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
+
+if [ -n "$TOTAL_SECTORS" ]; then
+    TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
+    # Backup GPT = last 33 sectors (1 header + 32 entry sectors)
+    BACKUP_GPT_SECTOR=$((TOTAL_SECTORS_DEC - 33))
+    DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
+    log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
+    log "  Backup GPT at sector: $BACKUP_GPT_SECTOR"
+else
+    # Fallback for common 4GB eMMC (JZ0145-v33 original)
+    BACKUP_GPT_SECTOR=7733215
+    warn "Could not read disk size — using fallback GPT sector $BACKUP_GPT_SECTOR"
+    warn "This may not work if the eMMC size differs from the original dongle."
+fi
 
 log "Writing primary GPT (sector 0)..."
 edl ws 0 "$FILES_DIR/gpt_primary_proper.bin"
