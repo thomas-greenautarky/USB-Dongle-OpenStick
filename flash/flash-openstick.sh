@@ -3,8 +3,9 @@
 # flash-openstick.sh — Flash OpenStick Debian onto a JZ0145-v33 UFI 4G USB dongle
 #
 # Prerequisites:
-#   - edl tool installed: pip install edl (or pipx install edlclient)
-#   - adb installed: apt install adb (for entering EDL from stock Android)
+#   - edl tool installed: pipx install edlclient
+#   - sgdisk installed: apt install gdisk (for GPT generation)
+#   - adb installed: apt install adb (optional, for entering EDL from stock Android)
 #   - Device in EDL mode (reset button + USB plug, or adb reboot edl)
 #   - All required files in the flash/files/ directory
 #
@@ -18,8 +19,8 @@
 #
 # Flash sequence:
 #   1. Enter EDL mode (reset button + USB plug, or adb reboot edl)
-#   2. Auto-backup modem calibration (IMEI, RF cal) from device
-#   3. Write split GPT (primary at sector 0, backup at end of disk)
+#   2. Auto-backup modem calibration + boot partitions + GPT from device
+#   3. Generate and write GPT sized to actual eMMC (primary + backup)
 #   4. Flash Dragonboard firmware (sbl1, rpm, tz, qhypstub, cdt, aboot)
 #   5. Flash boot.img (6.6 kernel with appended DTB, Android boot image format)
 #   6. Flash rootfs.raw (Debian)
@@ -45,8 +46,6 @@ BOOT_PARTITIONS=(sbl1 rpm tz hyp cdt aboot boot rootfs)
 # Required flash files
 REQUIRED_FILES=(
     "$FILES_DIR/emmc_appsboot-test-signed.mbn"
-    "$FILES_DIR/gpt_primary_proper.bin"
-    "$FILES_DIR/gpt_backup_proper.bin"
     "$FILES_DIR/sbl1.mbn"
     "$FILES_DIR/rpm.mbn"
     "$FILES_DIR/tz.mbn"
@@ -114,7 +113,7 @@ log "Logging to: $LOGFILE"
 # ─── Step 1b: Identify dongle hardware ─────────────────────────────────────
 
 log "Identifying dongle hardware..."
-EDL_INFO=$(edl printgpt 2>&1 || true)
+EDL_INFO=$(timeout 15 edl printgpt 2>&1 || true)
 echo "$EDL_INFO" >> "$LOGFILE"
 
 # Check platform via chipset ID in edl output
@@ -195,6 +194,14 @@ fi
 
 # ─── Step 2b: Full partition backup (for rollback if new image doesn't boot) ─
 
+# Also backup the original GPT (first 34 sectors)
+log "  Reading original GPT..."
+if edl rs 0 34 "$AUTOSAVE_DIR/gpt_primary.bin" 2>&1 | grep -q "Dumped"; then
+    log "  Saved GPT ($(du -h "$AUTOSAVE_DIR/gpt_primary.bin" | cut -f1))"
+else
+    warn "  Failed to read GPT"
+fi
+
 log "Backing up original boot partitions (for rollback)..."
 FULL_BACKUP_OK=true
 for part in "${BOOT_PARTITIONS[@]}"; do
@@ -234,7 +241,8 @@ echo ""
 # The backup GPT must be at the very end of the disk. Its position varies
 # by eMMC size (3.73 GB vs 3.81 GB etc.), so we cannot hardcode it.
 log "Reading disk size..."
-DISK_INFO=$(edl printgpt 2>&1 | grep -i "Total disk size" || true)
+# Use timeout to prevent bootloop from hanging the script indefinitely
+DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
 TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
 
 if [ -n "$TOTAL_SECTORS" ]; then
@@ -245,17 +253,69 @@ if [ -n "$TOTAL_SECTORS" ]; then
     log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
     log "  Backup GPT at sector: $BACKUP_GPT_SECTOR"
 else
-    # Fallback for common 4GB eMMC (JZ0145-v33 original)
-    BACKUP_GPT_SECTOR=7733215
-    warn "Could not read disk size — using fallback GPT sector $BACKUP_GPT_SECTOR"
-    warn "This may not work if the eMMC size differs from the original dongle."
+    # printgpt can fail if the GPT is corrupted (e.g. from a previous bad flash).
+    # Fall back to reading raw disk geometry via edl.
+    warn "printgpt failed (GPT may be corrupted). Reading disk geometry directly..."
+    GEO_INFO=$(timeout 15 edl footer 0 0 2>&1 || true)
+    TOTAL_SECTORS=$(echo "$GEO_INFO" | grep -oiP 'sectors[:\s]*0x\K[0-9a-fA-F]+' | head -1)
+
+    if [ -z "$TOTAL_SECTORS" ]; then
+        # Last resort: use known eMMC sizes for MSM8916 UFI sticks
+        warn "Could not detect disk size automatically."
+        warn "Known eMMC sizes for MSM8916 dongles:"
+        warn "  a) 3.73 GB (7733248 sectors) — JZ0145-v33 original"
+        warn "  b) 3.81 GB (7864320 sectors) — JZ02/UFI variant"
+        echo ""
+        echo -ne "${GREEN}[+]${NC} Select [a/b] or enter sector count manually: "
+        read -r SIZE_CHOICE
+        case "$SIZE_CHOICE" in
+            a) TOTAL_SECTORS_DEC=7733248 ;;
+            b) TOTAL_SECTORS_DEC=7864320 ;;
+            *) TOTAL_SECTORS_DEC="$SIZE_CHOICE" ;;
+        esac
+    else
+        TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
+    fi
+
+    BACKUP_GPT_SECTOR=$((TOTAL_SECTORS_DEC - 33))
+    DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
+    log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
+    log "  Backup GPT at sector: $BACKUP_GPT_SECTOR"
 fi
 
+# Generate GPT matching this disk's actual size using sgdisk
+which sgdisk >/dev/null 2>&1 || err "sgdisk not found. Install: apt install gdisk"
+
+GPT_IMG=$(mktemp)
+truncate -s $((TOTAL_SECTORS_DEC * 512)) "$GPT_IMG"
+sgdisk --zap-all "$GPT_IMG" >/dev/null 2>&1
+sgdisk -a 1 \
+    -n 1:131072:131075   -c 1:cdt       -t 1:a01b \
+    -n 2:131076:132099   -c 2:sbl1      -t 2:a012 \
+    -n 3:132100:133123   -c 3:rpm       -t 3:a018 \
+    -n 4:133124:135171   -c 4:tz        -t 4:a016 \
+    -n 5:135172:136195   -c 5:hyp       -t 5:a017 \
+    -n 6:136196:136227   -c 6:sec       -t 6:a01d \
+    -n 7:136228:140323   -c 7:modemst1  -t 7:a027 \
+    -n 8:140324:144419   -c 8:modemst2  -t 8:a028 \
+    -n 9:144420:144421   -c 9:fsc       -t 9:a029 \
+    -n 10:144422:148517  -c 10:fsg      -t 10:a02a \
+    -n 11:148518:150565  -c 11:aboot    -t 11:a015 \
+    -n 12:150566:281637  -c 12:boot     -t 12:a036 \
+    -n 13:281638:0       -c 13:rootfs   -t 13:a038 \
+    "$GPT_IMG" >/dev/null 2>&1 || err "Failed to generate GPT"
+
+# Extract primary (first 34 sectors) and backup (last 33 sectors) GPT
+dd if="$GPT_IMG" of="$GPT_IMG.primary" bs=512 count=34 2>/dev/null
+dd if="$GPT_IMG" of="$GPT_IMG.backup" bs=512 skip=$((TOTAL_SECTORS_DEC - 33)) count=33 2>/dev/null
+
 log "Writing primary GPT (sector 0)..."
-edl ws 0 "$FILES_DIR/gpt_primary_proper.bin"
+edl ws 0 "$GPT_IMG.primary"
 
 log "Writing backup GPT (sector $BACKUP_GPT_SECTOR)..."
-edl ws "$BACKUP_GPT_SECTOR" "$FILES_DIR/gpt_backup_proper.bin"
+edl ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup"
+
+rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
 
 # ─── Step 4: Flash Dragonboard firmware via EDL ─────────────────────────────
 
