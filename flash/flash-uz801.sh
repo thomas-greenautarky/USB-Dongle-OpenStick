@@ -209,36 +209,45 @@ if [ "$DONGLE_STATE" = "android" ]; then
         } > "$BACKUP_DIR/device_info.txt" 2>&1
 
         # Backup all partitions
+        # Backup partitions via adb pull (NOT adb shell dd | pipe, which corrupts data)
+        # Method: dd to /tmp on device, then adb pull the file
         BACKUP_PARTS="modem sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
         BACKUP_ERRORS=0
         for part in $BACKUP_PARTS; do
             echo -n "    $part... "
-            # Get hash on device before transfer
-            REMOTE_MD5=$(adb shell "md5sum /dev/block/bootdevice/by-name/$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
-            # Transfer
-            adb shell "dd if=/dev/block/bootdevice/by-name/$part 2>/dev/null" > "$BACKUP_DIR/${part}.bin" 2>/dev/null
+            # Copy partition to temp file on device
+            adb shell "dd if=/dev/block/bootdevice/by-name/$part of=/tmp/_backup_$part bs=1M 2>/dev/null" >/dev/null 2>&1
+            # Get hash on device
+            REMOTE_MD5=$(adb shell "md5sum /tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+            # Pull file (reliable transfer, no pipe corruption)
+            adb pull "/tmp/_backup_$part" "$BACKUP_DIR/${part}.bin" >/dev/null 2>&1
+            # Clean up temp file
+            adb shell "rm -f /tmp/_backup_$part" >/dev/null 2>&1
             # Verify local hash
             LOCAL_MD5=$(md5sum "$BACKUP_DIR/${part}.bin" 2>/dev/null | awk '{print $1}')
             SIZE=$(du -h "$BACKUP_DIR/${part}.bin" 2>/dev/null | cut -f1)
             if [ "$REMOTE_MD5" = "$LOCAL_MD5" ] && [ -n "$REMOTE_MD5" ]; then
-                echo "$SIZE (verified)"
+                echo "$SIZE ✓"
             else
-                echo "$SIZE (HASH MISMATCH: device=$REMOTE_MD5 local=$LOCAL_MD5)"
+                echo "$SIZE ✗ MISMATCH (device=$REMOTE_MD5 local=$LOCAL_MD5)"
                 BACKUP_ERRORS=$((BACKUP_ERRORS + 1))
             fi
         done
         if [ "$BACKUP_ERRORS" -gt 0 ]; then
             warn "  $BACKUP_ERRORS partition(s) have hash mismatches!"
-            warn "  ADB transfer over USB may have corrupted data."
             echo -ne "${YELLOW}[!]${NC} Continue anyway? [y/N] "
             read -r CONTINUE
             [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
+        else
+            log "  All partitions verified ✓"
         fi
 
-        # GPT
+        # GPT (small enough for pipe transfer)
         echo -n "    gpt... "
-        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 2>/dev/null" > "$BACKUP_DIR/gpt_primary.bin" 2>/dev/null
-        echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1)"
+        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 of=/tmp/_backup_gpt 2>/dev/null" >/dev/null 2>&1
+        adb pull "/tmp/_backup_gpt" "$BACKUP_DIR/gpt_primary.bin" >/dev/null 2>&1
+        adb shell "rm -f /tmp/_backup_gpt" >/dev/null 2>&1
+        echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1) ✓"
 
         # Modem firmware as individual files (raw partition dump has FAT corruption via ADB dd)
         log "  Backing up modem firmware files..."
