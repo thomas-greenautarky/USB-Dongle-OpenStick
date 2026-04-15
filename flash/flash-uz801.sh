@@ -137,24 +137,31 @@ if [ "$DONGLE_STATE" = "android" ]; then
     log "=== Step 2: Stock Android → ADB → Backup ==="
 
     # Find web interface
+    # Wait for the dongle's USB network interface to get a DHCP lease
     DONGLE_WEB=""
-    for ip in 192.168.100.1 192.168.0.1 192.168.1.1; do
-        if ping -c 1 -W 3 "$ip" >/dev/null 2>&1; then
-            DONGLE_WEB="$ip"
-            break
+    log "  Waiting for USB network interface..."
+    for attempt in $(seq 1 12); do
+        # Find the dongle's USB ethernet interface (enx*)
+        DONGLE_IFACE=$(ip -br addr 2>/dev/null | grep "^enx" | grep -v "DOWN" | head -1 | awk '{print $1}')
+        if [ -n "$DONGLE_IFACE" ]; then
+            # Get the gateway IP from this interface (= dongle's web UI)
+            DONGLE_GW=$(ip route 2>/dev/null | grep "dev $DONGLE_IFACE" | grep -oP 'via \K[0-9.]+' | head -1)
+            if [ -z "$DONGLE_GW" ]; then
+                # No gateway yet, try common dongle IPs on this interface only
+                for ip in 192.168.100.1 192.168.0.1; do
+                    if ping -c 1 -W 2 -I "$DONGLE_IFACE" "$ip" >/dev/null 2>&1; then
+                        DONGLE_GW="$ip"
+                        break
+                    fi
+                done
+            fi
+            [ -n "$DONGLE_GW" ] && DONGLE_WEB="$DONGLE_GW" && break
         fi
+        sleep 3
     done
 
-    if [ -z "$DONGLE_WEB" ]; then
-        warn "Web interface not reachable. Waiting 15s for DHCP..."
-        sleep 15
-        for ip in 192.168.100.1 192.168.0.1 192.168.1.1; do
-            ping -c 1 -W 3 "$ip" >/dev/null 2>&1 && DONGLE_WEB="$ip" && break
-        done
-    fi
-
-    [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface."
-    log "  Web interface: http://$DONGLE_WEB"
+    [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface. No USB network with gateway found."
+    log "  Web interface: http://$DONGLE_WEB (via $DONGLE_IFACE)"
 
     # Login
     LOGIN_RESULT=$(curl -s --connect-timeout 5 --max-time 10 "http://$DONGLE_WEB:80/ajax" \
