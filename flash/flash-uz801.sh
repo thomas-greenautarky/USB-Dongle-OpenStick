@@ -218,7 +218,7 @@ if [ "$DONGLE_STATE" = "android" ]; then
             # Copy partition to temp file on device
             adb shell "dd if=/dev/block/bootdevice/by-name/$part of=/tmp/_backup_$part bs=1M 2>/dev/null" >/dev/null 2>&1
             # Get hash on device
-            REMOTE_MD5=$(adb shell "md5sum /tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+            REMOTE_MD5=$(adb shell "md5sum /tmp/_backup_$part 2>/dev/null || busybox md5sum /tmp/_backup_$part 2>/dev/null || md5 /tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
             # Pull file (reliable transfer, no pipe corruption)
             adb pull "/tmp/_backup_$part" "$BACKUP_DIR/${part}.bin" >/dev/null 2>&1
             # Clean up temp file
@@ -262,7 +262,7 @@ if [ "$DONGLE_STATE" = "android" ]; then
             FW_ERRORS=0
             for fw in "$MODEM_FW_DIR"/*; do
                 FNAME=$(basename "$fw")
-                REMOTE_MD5=$(adb shell "md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+                REMOTE_MD5=$(adb shell "md5sum /firmware/image/$FNAME 2>/dev/null || busybox md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
                 LOCAL_MD5=$(md5sum "$fw" 2>/dev/null | awk '{print $1}')
                 if [ "$REMOTE_MD5" != "$LOCAL_MD5" ] || [ -z "$REMOTE_MD5" ]; then
                     warn "    $FNAME: hash mismatch"
