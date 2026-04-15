@@ -353,6 +353,7 @@ sgdisk -a 1 \
     -n 11:148518:150565  -c 11:aboot    -t 11:a015 \
     -n 12:150566:281637  -c 12:boot     -t 12:a036 \
     -n 13:281638:0       -c 13:rootfs   -t 13:a038 \
+    -u 13:a7ab80e8-e9d1-e8cd-f157-93f69b1d141e \
     "$GPT_IMG" >/dev/null 2>&1 || err "Failed to generate GPT"
 
 # Extract primary (first 34 sectors) and backup (last 33 sectors) GPT

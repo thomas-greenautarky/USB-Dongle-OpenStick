@@ -24,6 +24,8 @@
 #   bash flash-uz801.sh --skip-backup      # skip partition backup (dangerous!)
 #   bash flash-uz801.sh --restore <dir>    # restore from backup
 
+export PATH="$HOME/.local/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILES_DIR="$SCRIPT_DIR/files/uz801"
 LOG_DIR="$SCRIPT_DIR/../logs"
@@ -155,7 +157,7 @@ if [ "$DONGLE_STATE" = "android" ]; then
     log "  Web interface: http://$DONGLE_WEB"
 
     # Login
-    LOGIN_RESULT=$(curl -s "http://$DONGLE_WEB:80/ajax" \
+    LOGIN_RESULT=$(curl -s --connect-timeout 5 --max-time 10 "http://$DONGLE_WEB:80/ajax" \
         -d '{"funcNo":1000,"username":"admin","password":"admin"}' 2>&1)
     DONGLE_IMEI=$(echo "$LOGIN_RESULT" | grep -oP '"imei":"[^"]*"' | cut -d'"' -f4)
 
@@ -168,7 +170,8 @@ if [ "$DONGLE_STATE" = "android" ]; then
 
     # Enable ADB
     log "  Enabling ADB via /usbdebug.html (funcNo:2001)..."
-    curl -s "http://$DONGLE_WEB:80/ajax" -d '{"funcNo":2001}' >/dev/null 2>&1
+    curl -s --connect-timeout 5 --max-time 10 "http://$DONGLE_WEB:80/ajax" -d '{"funcNo":2001}' >/dev/null 2>&1 || true
+    log "  Waiting for ADB..."
     sleep 5
 
     # Verify ADB
@@ -281,6 +284,10 @@ log "=== Step 6: Generate GPT ==="
 GPT_IMG=$(mktemp)
 truncate -s $((TOTAL_SECTORS_DEC * 512)) "$GPT_IMG"
 sgdisk --zap-all "$GPT_IMG" >/dev/null 2>&1
+# The rootfs partition MUST have PARTUUID a7ab80e8-e9d1-e8cd-f157-93f69b1d141e
+# because the prebuilt boot.bin extlinux.conf hardcodes root=PARTUUID=<this value>.
+ROOTFS_PARTUUID="a7ab80e8-e9d1-e8cd-f157-93f69b1d141e"
+
 sgdisk -a 1 \
     -n 1:131072:131075   -c 1:cdt       -t 1:a01b \
     -n 2:131076:132099   -c 2:sbl1      -t 2:a012 \
@@ -297,6 +304,7 @@ sgdisk -a 1 \
     -n 13:281638:347173  -c 13:persist  -t 13:0700 \
     -n 14:347174:478245  -c 14:boot     -t 14:a036 \
     -n 15:478246:0       -c 15:rootfs   -t 15:8300 \
+    -u 15:"$ROOTFS_PARTUUID" \
     "$GPT_IMG" >/dev/null 2>&1 || err "GPT generation failed"
 
 LAST_USABLE=$((TOTAL_SECTORS_DEC - 34))
