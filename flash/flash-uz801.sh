@@ -279,31 +279,42 @@ fi
 
 log "=== Step 6: Generate GPT ==="
 
+# Calculate modem partition size dynamically from backup
+MODEM_START=150566
+MODEM_END=282137  # default: 64.2 MB
+if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modem.bin" ]; then
+    MODEM_BYTES=$(stat -c%s "$BACKUP_DIR/modem.bin")
+    MODEM_SECTORS=$(( (MODEM_BYTES + 511) / 512 ))  # round up
+    MODEM_END=$(( MODEM_START + MODEM_SECTORS - 1 ))
+    log "  Modem partition sized to backup: $MODEM_SECTORS sectors ($(( MODEM_BYTES / 1024 / 1024 )) MB)"
+fi
+PERSIST_START=$(( MODEM_END + 1 ))
+
 # Generate GPT with sgdisk matching the actual disk size
-# Layout: same as OpenStick-Builder (universal for all MSM8916 dongles)
 GPT_IMG=$(mktemp)
 truncate -s $((TOTAL_SECTORS_DEC * 512)) "$GPT_IMG"
 sgdisk --zap-all "$GPT_IMG" >/dev/null 2>&1
+
 # The rootfs partition MUST have PARTUUID a7ab80e8-e9d1-e8cd-f157-93f69b1d141e
 # because the prebuilt boot.bin extlinux.conf hardcodes root=PARTUUID=<this value>.
 ROOTFS_PARTUUID="a7ab80e8-e9d1-e8cd-f157-93f69b1d141e"
 
 sgdisk -a 1 \
-    -n 1:131072:131075   -c 1:cdt       -t 1:a01b \
-    -n 2:131076:132099   -c 2:sbl1      -t 2:a012 \
-    -n 3:132100:133123   -c 3:rpm       -t 3:a018 \
-    -n 4:133124:135171   -c 4:tz        -t 4:a016 \
-    -n 5:135172:136195   -c 5:hyp       -t 5:a017 \
-    -n 6:136196:136227   -c 6:sec       -t 6:a01d \
-    -n 7:136228:140323   -c 7:modemst1  -t 7:a027 \
-    -n 8:140324:144419   -c 8:modemst2  -t 8:a028 \
-    -n 9:144420:144421   -c 9:fsc       -t 9:a029 \
-    -n 10:144422:148517  -c 10:fsg      -t 10:a02a \
-    -n 11:148518:150565  -c 11:aboot    -t 11:a015 \
-    -n 12:150566:282137  -c 12:modem    -t 12:0700 \
-    -n 13:282138:347173  -c 13:persist  -t 13:0700 \
-    -n 14:347174:478245  -c 14:boot     -t 14:a036 \
-    -n 15:478246:0       -c 15:rootfs   -t 15:8300 \
+    -n 1:131072:131075        -c 1:cdt       -t 1:a01b \
+    -n 2:131076:132099        -c 2:sbl1      -t 2:a012 \
+    -n 3:132100:133123        -c 3:rpm       -t 3:a018 \
+    -n 4:133124:135171        -c 4:tz        -t 4:a016 \
+    -n 5:135172:136195        -c 5:hyp       -t 5:a017 \
+    -n 6:136196:136227        -c 6:sec       -t 6:a01d \
+    -n 7:136228:140323        -c 7:modemst1  -t 7:a027 \
+    -n 8:140324:144419        -c 8:modemst2  -t 8:a028 \
+    -n 9:144420:144421        -c 9:fsc       -t 9:a029 \
+    -n 10:144422:148517       -c 10:fsg      -t 10:a02a \
+    -n 11:148518:150565       -c 11:aboot    -t 11:a015 \
+    -n 12:${MODEM_START}:${MODEM_END}  -c 12:modem    -t 12:0700 \
+    -n 13:${PERSIST_START}:347173      -c 13:persist  -t 13:0700 \
+    -n 14:347174:478245       -c 14:boot     -t 14:a036 \
+    -n 15:478246:0            -c 15:rootfs   -t 15:8300 \
     -u 15:"$ROOTFS_PARTUUID" \
     "$GPT_IMG" >/dev/null 2>&1 || err "GPT generation failed"
 
