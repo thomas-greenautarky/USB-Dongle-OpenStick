@@ -1,0 +1,399 @@
+#!/bin/bash -e
+#
+# flash-uz801.sh — Flash OpenStick Debian onto UZ801 (and compatible) USB dongles
+#
+# Supports dongles running Stock Android (05c6:f00e) or already in EDL (05c6:9008).
+# Uses lk2nd as universal bootloader (replaces stock aboot).
+#
+# Flow:
+#   1. Detect dongle state (Stock Android / EDL / Fastboot)
+#   2. If Stock Android: enable ADB via web API, backup all partitions, adb reboot edl
+#   3. If EDL: backup partitions via edl
+#   4. Flash: GPT + firmware + lk2nd (aboot) + boot (kernel+DTBs) + rootfs
+#   5. Reset and verify boot
+#
+# Prerequisites:
+#   - edl: pipx install edlclient
+#   - adb: apt install adb
+#   - sgdisk: apt install gdisk
+#   - curl, sshpass
+#   - Prebuilt files in flash/files/uz801/ (from OpenStick-Builder or custom build)
+#
+# Usage:
+#   bash flash-uz801.sh                    # interactive
+#   bash flash-uz801.sh --skip-backup      # skip partition backup (dangerous!)
+#   bash flash-uz801.sh --restore <dir>    # restore from backup
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FILES_DIR="$SCRIPT_DIR/files/uz801"
+LOG_DIR="$SCRIPT_DIR/../logs"
+BACKUP_BASE="$SCRIPT_DIR/../backup"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[+]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
+
+# ─── Parse arguments ────────────────────────────────────────────────────────
+
+SKIP_BACKUP=false
+RESTORE_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-backup)  SKIP_BACKUP=true; shift ;;
+        --restore)      RESTORE_DIR="$2"; shift 2 ;;
+        *) err "Unknown option: $1" ;;
+    esac
+done
+
+# ─── Restore mode ───────────────────────────────────────────────────────────
+
+if [ -n "$RESTORE_DIR" ]; then
+    log "=== Restore Mode ==="
+    [ -d "$RESTORE_DIR" ] || err "Backup directory not found: $RESTORE_DIR"
+    log "Restoring from: $RESTORE_DIR"
+    bash "$SCRIPT_DIR/restore-dongle.sh" "$RESTORE_DIR"
+    exit $?
+fi
+
+# ─── Preflight checks ──────────────────────────────────────────────────────
+
+REQUIRED_FILES=(
+    "$FILES_DIR/aboot.mbn"
+    "$FILES_DIR/hyp.mbn"
+    "$FILES_DIR/sbl1.mbn"
+    "$FILES_DIR/rpm.mbn"
+    "$FILES_DIR/tz.mbn"
+    "$FILES_DIR/boot.bin"
+)
+
+# rootfs: prefer our custom rootfs, fall back to prebuilt
+if [ -f "$SCRIPT_DIR/files/rootfs.raw" ]; then
+    ROOTFS_FILE="$SCRIPT_DIR/files/rootfs.raw"
+    ROOTFS_FORMAT="raw"
+elif [ -f "$FILES_DIR/rootfs.bin" ]; then
+    ROOTFS_FILE="$FILES_DIR/rootfs.bin"
+    ROOTFS_FORMAT="sparse"
+else
+    err "No rootfs found. Build one or download prebuilt."
+fi
+
+log "Checking required files..."
+for f in "${REQUIRED_FILES[@]}"; do
+    [ -f "$f" ] || err "Missing: $f"
+done
+log "All files present. Rootfs: $ROOTFS_FILE ($ROOTFS_FORMAT)"
+
+which edl >/dev/null 2>&1 || err "edl not found. Install: pipx install edlclient"
+which adb >/dev/null 2>&1 || warn "adb not found (needed for Stock Android dongles)"
+which sgdisk >/dev/null 2>&1 || err "sgdisk not found. Install: apt install gdisk"
+
+# ─── Logging ────────────────────────────────────────────────────────────────
+
+mkdir -p "$LOG_DIR"
+LOGFILE="$LOG_DIR/flash_uz801_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOGFILE") 2>&1
+log "Logging to: $LOGFILE"
+
+# ─── Step 1: Detect dongle state ───────────────────────────────────────────
+
+log "=== Step 1: Detect dongle ==="
+
+DONGLE_STATE="unknown"
+DONGLE_IMEI=""
+
+if lsusb 2>/dev/null | grep -q "05c6:9008"; then
+    DONGLE_STATE="edl"
+    log "Dongle in EDL mode (05c6:9008)"
+elif lsusb 2>/dev/null | grep -q "18d1:d00d"; then
+    DONGLE_STATE="fastboot"
+    log "Dongle in Fastboot/lk2nd mode (18d1:d00d)"
+elif lsusb 2>/dev/null | grep -q "05c6:f00e\|05c6:90b6"; then
+    DONGLE_STATE="android"
+    log "Dongle in Stock Android mode"
+else
+    warn "No dongle detected. Please plug in a dongle."
+    echo -n "Press Enter when dongle is connected..."
+    read -r
+    if lsusb 2>/dev/null | grep -q "05c6:9008"; then
+        DONGLE_STATE="edl"
+    elif lsusb 2>/dev/null | grep -q "05c6:f00e\|05c6:90b6"; then
+        DONGLE_STATE="android"
+    else
+        err "No supported dongle detected."
+    fi
+fi
+
+# ─── Step 2: If Stock Android, enable ADB and backup ───────────────────────
+
+if [ "$DONGLE_STATE" = "android" ]; then
+    log "=== Step 2: Stock Android → ADB → Backup ==="
+
+    # Find web interface
+    DONGLE_WEB=""
+    for ip in 192.168.100.1 192.168.0.1 192.168.1.1; do
+        if ping -c 1 -W 3 "$ip" >/dev/null 2>&1; then
+            DONGLE_WEB="$ip"
+            break
+        fi
+    done
+
+    if [ -z "$DONGLE_WEB" ]; then
+        warn "Web interface not reachable. Waiting 15s for DHCP..."
+        sleep 15
+        for ip in 192.168.100.1 192.168.0.1 192.168.1.1; do
+            ping -c 1 -W 3 "$ip" >/dev/null 2>&1 && DONGLE_WEB="$ip" && break
+        done
+    fi
+
+    [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface."
+    log "  Web interface: http://$DONGLE_WEB"
+
+    # Login
+    LOGIN_RESULT=$(curl -s "http://$DONGLE_WEB:80/ajax" \
+        -d '{"funcNo":1000,"username":"admin","password":"admin"}' 2>&1)
+    DONGLE_IMEI=$(echo "$LOGIN_RESULT" | grep -oP '"imei":"[^"]*"' | cut -d'"' -f4)
+
+    if [ -z "$DONGLE_IMEI" ]; then
+        warn "Login failed or IMEI not found. Trying default credentials..."
+        err "Cannot login to dongle web interface."
+    fi
+    log "  IMEI: $DONGLE_IMEI"
+    log "  Firmware: $(echo "$LOGIN_RESULT" | grep -oP '"fwversion":"[^"]*"' | cut -d'"' -f4)"
+
+    # Enable ADB
+    log "  Enabling ADB via /usbdebug.html (funcNo:2001)..."
+    curl -s "http://$DONGLE_WEB:80/ajax" -d '{"funcNo":2001}' >/dev/null 2>&1
+    sleep 5
+
+    # Verify ADB
+    if ! adb devices 2>/dev/null | grep -q "device$"; then
+        warn "ADB not detected after enable. Waiting 10s..."
+        sleep 10
+    fi
+    adb devices 2>/dev/null | grep -q "device$" || err "ADB not available."
+    log "  ADB connected."
+
+    # Backup
+    if ! $SKIP_BACKUP; then
+        BACKUP_DIR="$BACKUP_BASE/stock_uz801_${DONGLE_IMEI}_$(date +%Y%m%d)"
+        mkdir -p "$BACKUP_DIR"
+        log "  Backing up to: $BACKUP_DIR"
+
+        # Device info
+        {
+            echo "IMEI: $DONGLE_IMEI"
+            echo "Date: $(date -Iseconds)"
+            echo "Firmware: $(echo "$LOGIN_RESULT" | grep -oP '"fwversion":"[^"]*"' | cut -d'"' -f4)"
+            echo ""
+            echo "=== Partitions ==="
+            adb shell "ls -la /dev/block/bootdevice/by-name/" 2>/dev/null
+            echo ""
+            echo "=== Properties ==="
+            adb shell "getprop ro.product.model; getprop ro.build.display.id; getprop ro.board.platform" 2>/dev/null
+        } > "$BACKUP_DIR/device_info.txt" 2>&1
+
+        # Backup all partitions
+        BACKUP_PARTS="sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
+        for part in $BACKUP_PARTS; do
+            echo -n "    $part... "
+            adb shell "dd if=/dev/block/bootdevice/by-name/$part 2>/dev/null" > "$BACKUP_DIR/${part}.bin" 2>/dev/null
+            SIZE=$(du -h "$BACKUP_DIR/${part}.bin" 2>/dev/null | cut -f1)
+            echo "$SIZE"
+        done
+
+        # GPT
+        echo -n "    gpt... "
+        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 2>/dev/null" > "$BACKUP_DIR/gpt_primary.bin" 2>/dev/null
+        echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1)"
+
+        log "  Backup complete: $(ls "$BACKUP_DIR"/*.bin 2>/dev/null | wc -l) files"
+        log "  Restore with: bash flash-uz801.sh --restore $BACKUP_DIR"
+    else
+        warn "  Skipping backup (--skip-backup)"
+    fi
+
+    # Reboot to EDL
+    log "  Rebooting to EDL..."
+    adb reboot edl 2>/dev/null
+    sleep 5
+
+    DONGLE_STATE="edl"
+fi
+
+# ─── Step 3: Wait for EDL ──────────────────────────────────────────────────
+
+if [ "$DONGLE_STATE" = "fastboot" ]; then
+    log "Rebooting from Fastboot to EDL..."
+    fastboot reboot 2>/dev/null || true
+    sleep 8
+fi
+
+log "Waiting for EDL device (05c6:9008)..."
+for i in $(seq 1 30); do
+    lsusb 2>/dev/null | grep -q "05c6:9008" && break
+    sleep 2
+done
+lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found."
+log "EDL device detected."
+
+# ─── Step 4: Read disk geometry ─────────────────────────────────────────────
+
+log "=== Step 4: Read disk geometry ==="
+DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
+TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
+
+if [ -n "$TOTAL_SECTORS" ]; then
+    TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
+    DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
+    log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
+else
+    warn "Could not read disk size. Using 3.6 GB default."
+    TOTAL_SECTORS_DEC=7634944
+fi
+
+# ─── Step 5: EDL backup (if not done via ADB) ──────────────────────────────
+
+if [ -z "$DONGLE_IMEI" ] && ! $SKIP_BACKUP; then
+    log "=== Step 5: EDL Backup ==="
+    BACKUP_DIR="$BACKUP_BASE/edl_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+
+    MODEM_PARTS="sec fsc fsg modemst1 modemst2"
+    for part in $MODEM_PARTS; do
+        log "  Reading $part..."
+        edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read " || warn "  Failed: $part"
+    done
+    log "  Backup: $BACKUP_DIR"
+fi
+
+# ─── Step 6: Generate GPT ──────────────────────────────────────────────────
+
+log "=== Step 6: Generate GPT ==="
+
+# Generate GPT with sgdisk matching the actual disk size
+# Layout: same as OpenStick-Builder (universal for all MSM8916 dongles)
+GPT_IMG=$(mktemp)
+truncate -s $((TOTAL_SECTORS_DEC * 512)) "$GPT_IMG"
+sgdisk --zap-all "$GPT_IMG" >/dev/null 2>&1
+sgdisk -a 1 \
+    -n 1:131072:131075   -c 1:cdt       -t 1:a01b \
+    -n 2:131076:132099   -c 2:sbl1      -t 2:a012 \
+    -n 3:132100:133123   -c 3:rpm       -t 3:a018 \
+    -n 4:133124:135171   -c 4:tz        -t 4:a016 \
+    -n 5:135172:136195   -c 5:hyp       -t 5:a017 \
+    -n 6:136196:136227   -c 6:sec       -t 6:a01d \
+    -n 7:136228:140323   -c 7:modemst1  -t 7:a027 \
+    -n 8:140324:144419   -c 8:modemst2  -t 8:a028 \
+    -n 9:144420:144421   -c 9:fsc       -t 9:a029 \
+    -n 10:144422:148517  -c 10:fsg      -t 10:a02a \
+    -n 11:148518:150565  -c 11:aboot    -t 11:a015 \
+    -n 12:150566:281637  -c 12:modem    -t 12:0700 \
+    -n 13:281638:347173  -c 13:persist  -t 13:0700 \
+    -n 14:347174:478245  -c 14:boot     -t 14:a036 \
+    -n 15:478246:0       -c 15:rootfs   -t 15:8300 \
+    "$GPT_IMG" >/dev/null 2>&1 || err "GPT generation failed"
+
+LAST_USABLE=$((TOTAL_SECTORS_DEC - 34))
+BACKUP_GPT_SECTOR=$((TOTAL_SECTORS_DEC - 33))
+log "  GPT: 15 partitions, rootfs ends at sector $LAST_USABLE"
+log "  Backup GPT at sector $BACKUP_GPT_SECTOR"
+
+# Extract primary + backup GPT
+dd if="$GPT_IMG" of="$GPT_IMG.primary" bs=512 count=34 2>/dev/null
+dd if="$GPT_IMG" of="$GPT_IMG.backup" bs=512 skip=$((TOTAL_SECTORS_DEC - 33)) count=33 2>/dev/null
+
+# ─── Step 7: Flash everything ──────────────────────────────────────────────
+
+log "=== Step 7: Flash ==="
+
+log "  Primary GPT..."
+edl ws 0 "$GPT_IMG.primary" 2>&1 | tail -1
+
+log "  Backup GPT..."
+edl ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup" 2>&1 | tail -1
+
+log "  Firmware (sbl1, rpm, tz, hyp, cdt)..."
+edl w sbl1  "$FILES_DIR/sbl1.mbn"  2>&1 | tail -1
+edl w rpm   "$FILES_DIR/rpm.mbn"   2>&1 | tail -1
+edl w tz    "$FILES_DIR/tz.mbn"    2>&1 | tail -1
+edl w hyp   "$FILES_DIR/hyp.mbn"   2>&1 | tail -1
+[ -f "$FILES_DIR/sbc_1.0_8016.bin" ] && edl w cdt "$FILES_DIR/sbc_1.0_8016.bin" 2>&1 | tail -1
+
+log "  Bootloader (lk2nd as aboot)..."
+edl w aboot "$FILES_DIR/aboot.mbn" 2>&1 | tail -1
+
+log "  Boot partition (kernel + DTBs)..."
+edl w boot  "$FILES_DIR/boot.bin"  2>&1 | tail -1
+
+log "  Rootfs (this takes 2-5 minutes)..."
+if [ "$ROOTFS_FORMAT" = "sparse" ]; then
+    edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
+else
+    edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
+fi
+
+# Restore modem calibration if we have a backup
+if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modemst1.bin" ]; then
+    log "  Restoring modem calibration..."
+    for part in sec fsc fsg modemst1 modemst2; do
+        [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
+    done
+    log "  Modem calibration restored."
+fi
+
+rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
+
+# ─── Step 8: Reset and verify ──────────────────────────────────────────────
+
+log "=== Step 8: Boot ==="
+edl reset 2>&1 | tail -1 || true
+
+log "Waiting for device to boot (90s)..."
+BOOTED=false
+for i in $(seq 1 18); do
+    sleep 5
+    if lsusb 2>/dev/null | grep -q "1d6b:0104"; then
+        log "RNDIS USB gadget detected after $((i*5))s!"
+        BOOTED=true
+        break
+    fi
+    # lk2nd fastboot means boot partition is OK but kernel didn't start
+    if lsusb 2>/dev/null | grep -q "18d1:d00d"; then
+        warn "Fastboot detected — lk2nd booted but kernel not found."
+        warn "The extlinux.conf DTB may need adjustment."
+        warn "Connect via: fastboot oem edl → edl → fix extlinux.conf"
+        break
+    fi
+done
+
+if $BOOTED; then
+    log "Device booted! Waiting for SSH..."
+    sleep 15
+    if ping -c 1 -W 5 192.168.68.1 >/dev/null 2>&1; then
+        log "Dongle reachable at 192.168.68.1"
+    else
+        warn "Dongle not reachable at 192.168.68.1 (may need DHCP or different IP)"
+    fi
+elif ! lsusb 2>/dev/null | grep -q "18d1:d00d"; then
+    warn "Device not detected after 90s."
+    echo ""
+    warn "Try:"
+    warn "  1. Unplug and re-plug the dongle (without reset pin)"
+    warn "  2. If it shows as fastboot (18d1:d00d): adjust DTB in extlinux.conf"
+    warn "  3. If nothing: restore backup with: bash flash-uz801.sh --restore $BACKUP_DIR"
+fi
+
+echo ""
+log "═══════════════════════════════════════"
+log "  Flash complete!"
+log "  IMEI:    ${DONGLE_IMEI:-unknown}"
+log "  Rootfs:  $ROOTFS_FILE"
+log "  Backup:  ${BACKUP_DIR:-none}"
+log "  Log:     $LOGFILE"
+log "═══════════════════════════════════════"
