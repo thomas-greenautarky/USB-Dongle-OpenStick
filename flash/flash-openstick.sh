@@ -80,6 +80,56 @@ which adb >/dev/null 2>&1   || warn "adb not found (optional, for entering EDL f
 log "Checking device state..."
 if lsusb 2>/dev/null | grep -q "05c6:9008"; then
     log "Device already in EDL mode."
+elif lsusb 2>/dev/null | grep -q "05c6:f00e"; then
+    # Stock Android dongle — try to reboot to EDL via web API
+    log "Stock Android dongle detected (05c6:f00e)."
+    log "Attempting to enter EDL via web API..."
+
+    # Wait for USB network interface and DHCP
+    DONGLE_WEB=""
+    for ip in 192.168.100.1 192.168.0.1 192.168.1.1; do
+        if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
+            DONGLE_WEB="$ip"
+            break
+        fi
+    done
+
+    if [ -n "$DONGLE_WEB" ]; then
+        log "  Web interface found at $DONGLE_WEB"
+
+        # Try ADB enable + EDL reboot via /ajax API
+        curl -s "http://$DONGLE_WEB:80/ajax" \
+            -d '{"module":"systemCmd","action":1,"command":"setprop persist.sys.usb.config diag,adb"}' >/dev/null 2>&1 || true
+        sleep 2
+
+        # Try ADB reboot if available
+        if which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
+            log "  ADB enabled — rebooting to EDL..."
+            adb reboot edl
+            sleep 5
+        else
+            # Try direct reboot to EDL via web API
+            log "  Sending reboot-to-EDL command via web API..."
+            curl -s "http://$DONGLE_WEB:80/ajax" \
+                -d '{"module":"systemCmd","action":1,"command":"reboot edl"}' >/dev/null 2>&1 || true
+            sleep 10
+        fi
+    fi
+
+    # If still not in EDL, fall through to manual instructions
+    if ! lsusb 2>/dev/null | grep -q "05c6:9008"; then
+        warn "Auto-EDL failed. Please enter EDL manually:"
+        warn "  1. Unplug the dongle"
+        warn "  2. Hold the reset button (pin hole) with a pin/needle"
+        warn "  3. Plug in while holding reset"
+        warn "  4. Hold for 10-15 seconds, then release"
+        warn ""
+        warn "If reset pin does not work, this dongle type may need"
+        warn "PCB test point shorting. See docs/dongle-compatibility.md"
+        echo ""
+        echo -n "Press Enter when device is in EDL mode..."
+        read
+    fi
 elif which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; then
     log "Device in ADB mode — rebooting to EDL..."
     adb reboot edl
@@ -87,9 +137,9 @@ elif which adb >/dev/null 2>&1 && adb devices 2>/dev/null | grep -q "device$"; t
 else
     warn "Device not detected. Please enter EDL mode manually:"
     warn "  1. Unplug the dongle"
-    warn "  2. Hold the reset button (pin hole)"
+    warn "  2. Hold the reset button (pin hole) with a pin/needle"
     warn "  3. Plug in while holding reset"
-    warn "  4. Hold for 3-5 seconds, then release"
+    warn "  4. Hold for 10-15 seconds, then release"
     echo ""
     echo -n "Press Enter when device is in EDL mode..."
     read
