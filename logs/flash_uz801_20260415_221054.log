@@ -1,0 +1,94 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_221054.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for USB network interface...
+[0;32m[+][0m   Web interface: http://192.168.100.1 (via enx025256313564)
+[0;32m[+][0m   IMEI: 860018046136678
+[0;32m[+][0m   Firmware: UZ801-V2.3.15.1
+[0;32m[+][0m   Enabling ADB via /usbdebug.html (funcNo:2001)...
+[0;32m[+][0m   Waiting for ADB...
+[1;33m[!][0m ADB not detected after enable. Waiting 10s...
+[0;32m[+][0m   ADB connected.
+[0;32m[+][0m   Backing up to: /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136678_20260415
+    modem...  ✗ MISMATCH (device= local=)
+    sbl1...  ✗ MISMATCH (device= local=)
+    sbl1bak...  ✗ MISMATCH (device= local=)
+    rpm...  ✗ MISMATCH (device= local=)
+    rpmbak...  ✗ MISMATCH (device= local=)
+    tz...  ✗ MISMATCH (device= local=)
+    tzbak...  ✗ MISMATCH (device= local=)
+    hyp...  ✗ MISMATCH (device= local=)
+    hypbak...  ✗ MISMATCH (device= local=)
+    aboot...  ✗ MISMATCH (device= local=)
+    abootbak...  ✗ MISMATCH (device= local=)
+    boot...  ✗ MISMATCH (device= local=)
+    recovery...  ✗ MISMATCH (device= local=)
+    sec...  ✗ MISMATCH (device= local=)
+    fsc...  ✗ MISMATCH (device= local=)
+    fsg...  ✗ MISMATCH (device= local=)
+    modemst1...  ✗ MISMATCH (device= local=)
+    modemst2...  ✗ MISMATCH (device= local=)
+    DDR...  ✗ MISMATCH (device= local=)
+    ssd...  ✗ MISMATCH (device= local=)
+    misc...  ✗ MISMATCH (device= local=)
+    splash...  ✗ MISMATCH (device= local=)
+    pad...  ✗ MISMATCH (device= local=)
+    persist...  ✗ MISMATCH (device= local=)
+[1;33m[!][0m   24 partition(s) have hash mismatches!
+[1;33m[!][0m Continue anyway? [y/N]     gpt... 20K ✓
+[0;32m[+][0m   Backing up modem firmware files...
+[1;33m[!][0m     modem_pr: hash mismatch
+[1;33m[!][0m   Modem firmware: 57 files (1 hash errors)
+[0;32m[+][0m   Backup complete: 1 partitions + 57 firmware files
+[0;32m[+][0m   Restore with: bash flash-uz801.sh --restore /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136678_20260415
+[0;32m[+][0m   Rebooting to EDL...
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;32m[+][0m EDL device detected.
+[0;32m[+][0m === Step 4: Read disk geometry ===
+[0;32m[+][0m   Disk: 3728 MB (7634944 sectors)
+[0;32m[+][0m === Step 6: Generate GPT ===
+[0;32m[+][0m   GPT: 15 partitions, rootfs ends at sector 7634910
+[0;32m[+][0m   Backup GPT at sector 7634911
+[0;32m[+][0m === Step 7: Flash ===
+[0;32m[+][0m   Primary GPT...
+Wrote /tmp/tmp.oRilj8v6AM.primary to sector 0.
+[0;32m[+][0m   Backup GPT...
+Wrote /tmp/tmp.oRilj8v6AM.backup to sector 7634911.
+[0;32m[+][0m   Firmware (sbl1, rpm, tz, hyp, cdt)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbl1.mbn to sector 131076.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/rpm.mbn to sector 132100.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/tz.mbn to sector 133124.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/hyp.mbn to sector 135172.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbc_1.0_8016.bin to sector 131072.
+[0;32m[+][0m   Bootloader (lk2nd as aboot)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/aboot.mbn to sector 148518.
+[0;32m[+][0m   Boot partition (kernel + DTBs)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/boot.bin to sector 347174.
+[0;32m[+][0m   Rootfs (this takes 2-5 minutes)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw to sector 478246.
+[0;32m[+][0m   Creating modem firmware partition (57 files)...
+Wrote /tmp/tmp.s59ar4Uerd to sector 150566.
+[1;33m[!][0m   No valid modemst backup — NV storage will be empty (IMEI may be missing)
+[0;32m[+][0m   Modem restored.
+[0;32m[+][0m === Step 8: Boot ===
+DeviceClass - USBError(5, 'Input/Output Error')
+[0;32m[+][0m Waiting for device to boot (90s)...
+[0;32m[+][0m RNDIS USB gadget detected after 10s!
+[0;32m[+][0m Device booted! Waiting for SSH...
+[0;32m[+][0m SSH connected.
+[0;32m[+][0m Copying modem firmware to dongle...
+[0;32m[+][0m   Copied 57 firmware files to /lib/firmware/
+[0;32m[+][0m Copying modem NV storage...
+[0;32m[+][0m   NV storage copied to /boot/
+[0;32m[+][0m Rebooting dongle for modem init...
+[0;32m[+][0m Dongle back after reboot.
+[0;32m[+][0m Dongle reachable at 192.168.68.1
+
+[0;32m[+][0m ═══════════════════════════════════════
+[0;32m[+][0m   Flash complete!
+[0;32m[+][0m   IMEI:    860018046136678
+[0;32m[+][0m   Rootfs:  /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw
+[0;32m[+][0m   Backup:  /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136678_20260415
+[0;32m[+][0m   Log:     /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_221054.log
+[0;32m[+][0m ═══════════════════════════════════════
