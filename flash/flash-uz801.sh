@@ -202,7 +202,7 @@ if [ "$DONGLE_STATE" = "android" ]; then
         } > "$BACKUP_DIR/device_info.txt" 2>&1
 
         # Backup all partitions
-        BACKUP_PARTS="sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
+        BACKUP_PARTS="modem sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
         for part in $BACKUP_PARTS; do
             echo -n "    $part... "
             adb shell "dd if=/dev/block/bootdevice/by-name/$part 2>/dev/null" > "$BACKUP_DIR/${part}.bin" 2>/dev/null
@@ -346,13 +346,19 @@ else
     edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
 fi
 
-# Restore modem calibration if we have a backup
-if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modemst1.bin" ]; then
-    log "  Restoring modem calibration..."
-    for part in sec fsc fsg modemst1 modemst2; do
-        [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
-    done
-    log "  Modem calibration restored."
+# Restore modem firmware + calibration if we have a backup
+if [ -n "$BACKUP_DIR" ]; then
+    if [ -f "$BACKUP_DIR/modem.bin" ]; then
+        log "  Restoring modem firmware (64 MB)..."
+        edl w modem "$BACKUP_DIR/modem.bin" 2>&1 | tail -1
+    fi
+    if [ -f "$BACKUP_DIR/modemst1.bin" ]; then
+        log "  Restoring modem calibration..."
+        for part in sec fsc fsg modemst1 modemst2; do
+            [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
+        done
+    fi
+    log "  Modem restored."
 fi
 
 rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
