@@ -1,0 +1,89 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_150411.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for USB network interface...
+[0;32m[+][0m   Web interface: http://192.168.100.1 (via enx020556023832)
+[0;32m[+][0m   IMEI: 860018046136975
+[0;32m[+][0m   Firmware: UZ801-V2.3.15.1
+[0;32m[+][0m   Enabling ADB via /usbdebug.html (funcNo:2001)...
+[0;32m[+][0m   Waiting for ADB...
+[1;33m[!][0m ADB not detected after enable. Waiting 10s...
+[0;32m[+][0m   ADB connected.
+[0;32m[+][0m   Backing up to: /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415
+    modem... 65M
+    sbl1... 516K
+    sbl1bak... 516K
+    rpm... 516K
+    rpmbak... 516K
+    tz... 516K
+    tzbak... 516K
+    hyp... 516K
+    hypbak... 516K
+    aboot... 1.1M
+    abootbak... 1.1M
+    boot... 17M
+    recovery... 17M
+    sec... 16K
+    fsc... 4.0K
+    fsg... 1.6M
+    modemst1... 1.6M
+    modemst2... 1.6M
+    DDR... 32K
+    ssd... 8.0K
+    misc... 1.0M
+    splash... 10M
+    pad... 1.0M
+    persist... 33M
+    gpt... 24K
+[0;32m[+][0m   Backup complete: 25 files
+[0;32m[+][0m   Restore with: bash flash-uz801.sh --restore /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415
+[0;32m[+][0m   Rebooting to EDL...
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;32m[+][0m EDL device detected.
+[0;32m[+][0m === Step 4: Read disk geometry ===
+[0;32m[+][0m   Disk: 3728 MB (7634944 sectors)
+[0;32m[+][0m === Step 6: Generate GPT ===
+[0;32m[+][0m   Modem partition sized to backup: 131497 sectors (64 MB)
+[0;32m[+][0m   GPT: 15 partitions, rootfs ends at sector 7634910
+[0;32m[+][0m   Backup GPT at sector 7634911
+[0;32m[+][0m === Step 7: Flash ===
+[0;32m[+][0m   Primary GPT...
+Wrote /tmp/tmp.12s5R0P4zl.primary to sector 0.
+[0;32m[+][0m   Backup GPT...
+Wrote /tmp/tmp.12s5R0P4zl.backup to sector 7634911.
+[0;32m[+][0m   Firmware (sbl1, rpm, tz, hyp, cdt)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbl1.mbn to sector 131076.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/rpm.mbn to sector 132100.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/tz.mbn to sector 133124.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/hyp.mbn to sector 135172.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbc_1.0_8016.bin to sector 131072.
+[0;32m[+][0m   Bootloader (lk2nd as aboot)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/aboot.mbn to sector 148518.
+[0;32m[+][0m   Boot partition (kernel + DTBs)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/boot.bin to sector 347174.
+[0;32m[+][0m   Rootfs (this takes 2-5 minutes)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw to sector 478246.
+[0;32m[+][0m   Restoring modem firmware (64 MB)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/modem.bin to sector 150566.
+[0;32m[+][0m   Restoring modem calibration...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/sec.bin to sector 136196.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/fsc.bin to sector 144420.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/fsg.bin to sector 144422.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/modemst1.bin to sector 136228.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415/modemst2.bin to sector 140324.
+[0;32m[+][0m   Modem restored.
+[0;32m[+][0m === Step 8: Boot ===
+DeviceClass - USBError(5, 'Input/Output Error')
+[0;32m[+][0m Waiting for device to boot (90s)...
+[0;32m[+][0m RNDIS USB gadget detected after 10s!
+[0;32m[+][0m Device booted! Waiting for SSH...
+[0;32m[+][0m Dongle reachable at 192.168.68.1
+
+[0;32m[+][0m ═══════════════════════════════════════
+[0;32m[+][0m   Flash complete!
+[0;32m[+][0m   IMEI:    860018046136975
+[0;32m[+][0m   Rootfs:  /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw
+[0;32m[+][0m   Backup:  /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136975_20260415
+[0;32m[+][0m   Log:     /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_150411.log
+[0;32m[+][0m ═══════════════════════════════════════

@@ -1,0 +1,8 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_120640.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Web interface: http://192.168.100.1
+[0;32m[+][0m   IMEI: 860018046136264
+[0;32m[+][0m   Firmware: UZ801-V2.3.15.1
+[0;32m[+][0m   Enabling ADB via /usbdebug.html (funcNo:2001)...

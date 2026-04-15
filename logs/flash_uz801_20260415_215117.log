@@ -1,0 +1,5 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_215117.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for USB network interface...

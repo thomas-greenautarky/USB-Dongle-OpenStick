@@ -1,0 +1,37 @@
+IMEI: 860018046136975
+Date: 2026-04-15T15:04:37+02:00
+Firmware: UZ801-V2.3.15.1
+
+=== Partitions ===
+lrwxrwxrwx root     root              1970-01-01 08:01 DDR -> /dev/block/mmcblk0p19
+lrwxrwxrwx root     root              1970-01-01 08:01 aboot -> /dev/block/mmcblk0p4
+lrwxrwxrwx root     root              1970-01-01 08:01 abootbak -> /dev/block/mmcblk0p5
+lrwxrwxrwx root     root              1970-01-01 08:01 boot -> /dev/block/mmcblk0p22
+lrwxrwxrwx root     root              1970-01-01 08:01 cache -> /dev/block/mmcblk0p25
+lrwxrwxrwx root     root              1970-01-01 08:01 fsc -> /dev/block/mmcblk0p16
+lrwxrwxrwx root     root              1970-01-01 08:01 fsg -> /dev/block/mmcblk0p20
+lrwxrwxrwx root     root              1970-01-01 08:01 hyp -> /dev/block/mmcblk0p10
+lrwxrwxrwx root     root              1970-01-01 08:01 hypbak -> /dev/block/mmcblk0p11
+lrwxrwxrwx root     root              1970-01-01 08:01 misc -> /dev/block/mmcblk0p15
+lrwxrwxrwx root     root              1970-01-01 08:01 modem -> /dev/block/mmcblk0p1
+lrwxrwxrwx root     root              1970-01-01 08:01 modemst1 -> /dev/block/mmcblk0p13
+lrwxrwxrwx root     root              1970-01-01 08:01 modemst2 -> /dev/block/mmcblk0p14
+lrwxrwxrwx root     root              1970-01-01 08:01 pad -> /dev/block/mmcblk0p12
+lrwxrwxrwx root     root              1970-01-01 08:01 persist -> /dev/block/mmcblk0p24
+lrwxrwxrwx root     root              1970-01-01 08:01 recovery -> /dev/block/mmcblk0p26
+lrwxrwxrwx root     root              1970-01-01 08:01 rpm -> /dev/block/mmcblk0p6
+lrwxrwxrwx root     root              1970-01-01 08:01 rpmbak -> /dev/block/mmcblk0p7
+lrwxrwxrwx root     root              1970-01-01 08:01 sbl1 -> /dev/block/mmcblk0p2
+lrwxrwxrwx root     root              1970-01-01 08:01 sbl1bak -> /dev/block/mmcblk0p3
+lrwxrwxrwx root     root              1970-01-01 08:01 sec -> /dev/block/mmcblk0p21
+lrwxrwxrwx root     root              1970-01-01 08:01 splash -> /dev/block/mmcblk0p18
+lrwxrwxrwx root     root              1970-01-01 08:01 ssd -> /dev/block/mmcblk0p17
+lrwxrwxrwx root     root              1970-01-01 08:01 system -> /dev/block/mmcblk0p23
+lrwxrwxrwx root     root              1970-01-01 08:01 tz -> /dev/block/mmcblk0p8
+lrwxrwxrwx root     root              1970-01-01 08:01 tzbak -> /dev/block/mmcblk0p9
+lrwxrwxrwx root     root              1970-01-01 08:01 userdata -> /dev/block/mmcblk0p27
+
+=== Properties ===
+UZ801
+V2.3.15.1
+msm8916

@@ -1,0 +1,157 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_153836.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for USB network interface...
+[0;32m[+][0m   Web interface: http://192.168.100.1 (via enx025108023566)
+[0;32m[+][0m   IMEI: 860018046136769
+[0;32m[+][0m   Firmware: UZ801-V2.3.15.1
+[0;32m[+][0m   Enabling ADB via /usbdebug.html (funcNo:2001)...
+[0;32m[+][0m   Waiting for ADB...
+[1;33m[!][0m ADB not detected after enable. Waiting 10s...
+[0;32m[+][0m   ADB connected.
+[0;32m[+][0m   Backing up to: /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415
+    modem... 65M (HASH MISMATCH: device= local=8817dd078e41d15166a9f82e50a505b3)
+    sbl1... 516K (HASH MISMATCH: device= local=77369c26126b534345d048aa685a7d52)
+    sbl1bak... 516K (HASH MISMATCH: device= local=77369c26126b534345d048aa685a7d52)
+    rpm... 516K (HASH MISMATCH: device= local=bdde6679a2ad24c6709899cbd0ca08df)
+    rpmbak... 516K (HASH MISMATCH: device= local=bdde6679a2ad24c6709899cbd0ca08df)
+    tz... 516K (HASH MISMATCH: device= local=1578ca0b15a34c94d870d138a07a5170)
+    tzbak... 516K (HASH MISMATCH: device= local=1578ca0b15a34c94d870d138a07a5170)
+    hyp... 516K (HASH MISMATCH: device= local=bb920ef9eacc5097f54909420d00a44d)
+    hypbak... 516K (HASH MISMATCH: device= local=bb920ef9eacc5097f54909420d00a44d)
+    aboot... 1.1M (HASH MISMATCH: device= local=e8b6e6168b5422fa6ddb54b871999992)
+    abootbak... 1.1M (HASH MISMATCH: device= local=6e780abce86ef19f5d887e7e254b908c)
+    boot... 17M (HASH MISMATCH: device= local=abfcba2452c5cd3a7d95214af3d7b1bf)
+    recovery... 17M (HASH MISMATCH: device= local=f070334bd7e1fc39d8a0aba534980710)
+    sec... 16K (HASH MISMATCH: device= local=fb63b6dae01116fc4236baa35cd10147)
+    fsc... 4.0K (HASH MISMATCH: device= local=0f343b0931126a20f133d67c2b018a3b)
+    fsg... 1.6M (HASH MISMATCH: device= local=c26c234a66fa6566e420403f160f7957)
+    modemst1... 1.6M (HASH MISMATCH: device= local=e5672c178d3af7086b40bca23831f9ce)
+    modemst2... 1.6M (HASH MISMATCH: device= local=a6b29149c98f4311a3e5ab670b6c5ecc)
+    DDR... 32K (HASH MISMATCH: device= local=bb7df04e1b0a2570657527a7e108ae23)
+    ssd... 8.0K (HASH MISMATCH: device= local=0829f71740aab1ab98b33eae21dee122)
+    misc... 1.0M (HASH MISMATCH: device= local=b6d81b360a5672d80c27430f39153e2c)
+    splash... 10M (HASH MISMATCH: device= local=f1c9645dbc14efddc7d8a322685f26eb)
+    pad... 1.0M (HASH MISMATCH: device= local=b6d81b360a5672d80c27430f39153e2c)
+    persist... 33M (HASH MISMATCH: device= local=8fd7438ad06a67d97b3a2d43f4a1f54e)
+[1;33m[!][0m   24 partition(s) have hash mismatches!
+[1;33m[!][0m   ADB transfer over USB may have corrupted data.
+[1;33m[!][0m Continue anyway? [y/N]     gpt... 24K
+[0;32m[+][0m   Backing up modem firmware files...
+[1;33m[!][0m     cmnlib.b00: hash mismatch
+[1;33m[!][0m     cmnlib.b01: hash mismatch
+[1;33m[!][0m     cmnlib.b02: hash mismatch
+[1;33m[!][0m     cmnlib.b03: hash mismatch
+[1;33m[!][0m     cmnlib.mdt: hash mismatch
+[1;33m[!][0m     isdbtmm.b00: hash mismatch
+[1;33m[!][0m     isdbtmm.b01: hash mismatch
+[1;33m[!][0m     isdbtmm.b02: hash mismatch
+[1;33m[!][0m     isdbtmm.b03: hash mismatch
+[1;33m[!][0m     isdbtmm.mdt: hash mismatch
+[1;33m[!][0m     keymaste.b00: hash mismatch
+[1;33m[!][0m     keymaste.b01: hash mismatch
+[1;33m[!][0m     keymaste.b02: hash mismatch
+[1;33m[!][0m     keymaste.b03: hash mismatch
+[1;33m[!][0m     keymaste.mdt: hash mismatch
+[1;33m[!][0m     mba.mbn: hash mismatch
+[1;33m[!][0m     modem.b00: hash mismatch
+[1;33m[!][0m     modem.b01: hash mismatch
+[1;33m[!][0m     modem.b02: hash mismatch
+[1;33m[!][0m     modem.b03: hash mismatch
+[1;33m[!][0m     modem.b04: hash mismatch
+[1;33m[!][0m     modem.b05: hash mismatch
+[1;33m[!][0m     modem.b08: hash mismatch
+[1;33m[!][0m     modem.b10: hash mismatch
+[1;33m[!][0m     modem.b11: hash mismatch
+[1;33m[!][0m     modem.b13: hash mismatch
+[1;33m[!][0m     modem.b14: hash mismatch
+[1;33m[!][0m     modem.b15: hash mismatch
+[1;33m[!][0m     modem.b16: hash mismatch
+[1;33m[!][0m     modem.b17: hash mismatch
+[1;33m[!][0m     modem.b18: hash mismatch
+[1;33m[!][0m     modem.b19: hash mismatch
+[1;33m[!][0m     modem.b22: hash mismatch
+[1;33m[!][0m     modem.b23: hash mismatch
+[1;33m[!][0m     modem.b24: hash mismatch
+[1;33m[!][0m     modem.b25: hash mismatch
+[1;33m[!][0m     modem.mdt: hash mismatch
+[1;33m[!][0m     modem_pr: hash mismatch
+[1;33m[!][0m     playread.b00: hash mismatch
+[1;33m[!][0m     playread.b01: hash mismatch
+[1;33m[!][0m     playread.b02: hash mismatch
+[1;33m[!][0m     playread.b03: hash mismatch
+[1;33m[!][0m     playread.mdt: hash mismatch
+[1;33m[!][0m     wcnss.b00: hash mismatch
+[1;33m[!][0m     wcnss.b01: hash mismatch
+[1;33m[!][0m     wcnss.b02: hash mismatch
+[1;33m[!][0m     wcnss.b04: hash mismatch
+[1;33m[!][0m     wcnss.b06: hash mismatch
+[1;33m[!][0m     wcnss.b09: hash mismatch
+[1;33m[!][0m     wcnss.b10: hash mismatch
+[1;33m[!][0m     wcnss.b11: hash mismatch
+[1;33m[!][0m     wcnss.mdt: hash mismatch
+[1;33m[!][0m     widevine.b00: hash mismatch
+[1;33m[!][0m     widevine.b01: hash mismatch
+[1;33m[!][0m     widevine.b02: hash mismatch
+[1;33m[!][0m     widevine.b03: hash mismatch
+[1;33m[!][0m     widevine.mdt: hash mismatch
+[1;33m[!][0m   Modem firmware: 57 files (57 hash errors)
+[0;32m[+][0m   Backup complete: 25 partitions + 57 firmware files
+[0;32m[+][0m   Restore with: bash flash-uz801.sh --restore /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415
+[0;32m[+][0m   Rebooting to EDL...
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;32m[+][0m EDL device detected.
+[0;32m[+][0m === Step 4: Read disk geometry ===
+[0;32m[+][0m   Disk: 3728 MB (7634944 sectors)
+[0;32m[+][0m === Step 6: Generate GPT ===
+[0;32m[+][0m   Modem partition sized to backup: 131497 sectors (64 MB)
+[0;32m[+][0m   GPT: 15 partitions, rootfs ends at sector 7634910
+[0;32m[+][0m   Backup GPT at sector 7634911
+[0;32m[+][0m === Step 7: Flash ===
+[0;32m[+][0m   Primary GPT...
+Wrote /tmp/tmp.L7a73tTbWl.primary to sector 0.
+[0;32m[+][0m   Backup GPT...
+Wrote /tmp/tmp.L7a73tTbWl.backup to sector 7634911.
+[0;32m[+][0m   Firmware (sbl1, rpm, tz, hyp, cdt)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbl1.mbn to sector 131076.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/rpm.mbn to sector 132100.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/tz.mbn to sector 133124.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/hyp.mbn to sector 135172.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbc_1.0_8016.bin to sector 131072.
+[0;32m[+][0m   Bootloader (lk2nd as aboot)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/aboot.mbn to sector 148518.
+[0;32m[+][0m   Boot partition (kernel + DTBs)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/boot.bin to sector 347174.
+[0;32m[+][0m   Rootfs (this takes 2-5 minutes)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw to sector 478246.
+[0;32m[+][0m   Restoring modem firmware (64 MB)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/modem.bin to sector 150566.
+[0;32m[+][0m   Restoring modem calibration...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/sec.bin to sector 136196.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/fsc.bin to sector 144420.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/fsg.bin to sector 144422.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/modemst1.bin to sector 136228.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415/modemst2.bin to sector 140324.
+[0;32m[+][0m   Modem restored.
+[0;32m[+][0m === Step 8: Boot ===
+DeviceClass - USBError(5, 'Input/Output Error')
+[0;32m[+][0m Waiting for device to boot (90s)...
+[0;32m[+][0m RNDIS USB gadget detected after 15s!
+[0;32m[+][0m Device booted! Waiting for SSH...
+[0;32m[+][0m SSH connected.
+[0;32m[+][0m Copying modem firmware to dongle...
+[0;32m[+][0m   Copied 57 firmware files to /lib/firmware/
+[0;32m[+][0m Copying modem NV storage...
+[0;32m[+][0m   NV storage copied to /boot/
+[0;32m[+][0m Rebooting dongle for modem init...
+[0;32m[+][0m Dongle back after reboot.
+[0;32m[+][0m Dongle reachable at 192.168.68.1
+
+[0;32m[+][0m ═══════════════════════════════════════
+[0;32m[+][0m   Flash complete!
+[0;32m[+][0m   IMEI:    860018046136769
+[0;32m[+][0m   Rootfs:  /home/user/git/USB-Dongle-OpenStick/flash/files/rootfs.raw
+[0;32m[+][0m   Backup:  /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136769_20260415
+[0;32m[+][0m   Log:     /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260415_153836.log
+[0;32m[+][0m ═══════════════════════════════════════
