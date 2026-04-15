@@ -216,13 +216,13 @@ if [ "$DONGLE_STATE" = "android" ]; then
         for part in $BACKUP_PARTS; do
             echo -n "    $part... "
             # Copy partition to temp file on device
-            adb shell "dd if=/dev/block/bootdevice/by-name/$part of=/tmp/_backup_$part bs=1M 2>/dev/null" >/dev/null 2>&1
+            adb shell "dd if=/dev/block/bootdevice/by-name/$part of=/data/local/data/local/tmp/_backup_$part bs=1M 2>/dev/null" >/dev/null 2>&1
             # Get hash on device
-            REMOTE_MD5=$(adb shell "md5sum /tmp/_backup_$part 2>/dev/null || busybox md5sum /tmp/_backup_$part 2>/dev/null || md5 /tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+            REMOTE_MD5=$(adb shell "busybox md5sum /data/local/tmp/_backup_$part 2>/dev/null || md5sum /data/local/tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
             # Pull file (reliable transfer, no pipe corruption)
-            adb pull "/tmp/_backup_$part" "$BACKUP_DIR/${part}.bin" >/dev/null 2>&1
+            adb pull "/data/local/tmp/_backup_$part" "$BACKUP_DIR/${part}.bin" >/dev/null 2>&1
             # Clean up temp file
-            adb shell "rm -f /tmp/_backup_$part" >/dev/null 2>&1
+            adb shell "rm -f /data/local/tmp/_backup_$part" >/dev/null 2>&1
             # Verify local hash
             LOCAL_MD5=$(md5sum "$BACKUP_DIR/${part}.bin" 2>/dev/null | awk '{print $1}')
             SIZE=$(du -h "$BACKUP_DIR/${part}.bin" 2>/dev/null | cut -f1)
@@ -244,9 +244,9 @@ if [ "$DONGLE_STATE" = "android" ]; then
 
         # GPT (small enough for pipe transfer)
         echo -n "    gpt... "
-        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 of=/tmp/_backup_gpt 2>/dev/null" >/dev/null 2>&1
-        adb pull "/tmp/_backup_gpt" "$BACKUP_DIR/gpt_primary.bin" >/dev/null 2>&1
-        adb shell "rm -f /tmp/_backup_gpt" >/dev/null 2>&1
+        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 of=/data/local/tmp/_backup_gpt 2>/dev/null" >/dev/null 2>&1
+        adb pull "/data/local/tmp/_backup_gpt" "$BACKUP_DIR/gpt_primary.bin" >/dev/null 2>&1
+        adb shell "rm -f /data/local/tmp/_backup_gpt" >/dev/null 2>&1
         echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1) ✓"
 
         # Modem firmware as individual files (raw partition dump has FAT corruption via ADB dd)
@@ -262,7 +262,7 @@ if [ "$DONGLE_STATE" = "android" ]; then
             FW_ERRORS=0
             for fw in "$MODEM_FW_DIR"/*; do
                 FNAME=$(basename "$fw")
-                REMOTE_MD5=$(adb shell "md5sum /firmware/image/$FNAME 2>/dev/null || busybox md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+                REMOTE_MD5=$(adb shell "busybox md5sum /firmware/image/$FNAME 2>/dev/null || md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
                 LOCAL_MD5=$(md5sum "$fw" 2>/dev/null | awk '{print $1}')
                 if [ "$REMOTE_MD5" != "$LOCAL_MD5" ] || [ -z "$REMOTE_MD5" ]; then
                     warn "    $FNAME: hash mismatch"
@@ -418,15 +418,37 @@ fi
 
 # Restore modem firmware + calibration if we have a backup
 if [ -n "$BACKUP_DIR" ]; then
-    if [ -f "$BACKUP_DIR/modem.bin" ]; then
-        log "  Restoring modem firmware (64 MB)..."
+    MODEM_FW_DIR="$BACKUP_DIR/modem_firmware"
+    if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
+        # Create fresh vfat with firmware files (raw modem.bin dump has FAT corruption)
+        log "  Creating modem firmware partition ($( ls "$MODEM_FW_DIR" | wc -l) files)..."
+        MODEM_VFAT=$(mktemp)
+        MODEM_SECTORS=$((MODEM_END - MODEM_START + 1))
+        dd if=/dev/zero of="$MODEM_VFAT" bs=512 count=$MODEM_SECTORS 2>/dev/null
+        mkfs.vfat -n "NON-HLOS" "$MODEM_VFAT" >/dev/null 2>&1
+        # Use mcopy to add files without mounting (no sudo needed)
+        if which mcopy >/dev/null 2>&1; then
+            mmd -i "$MODEM_VFAT" ::/image 2>/dev/null
+            mcopy -i "$MODEM_VFAT" "$MODEM_FW_DIR"/* ::/image/ 2>/dev/null
+        else
+            # Fallback: use Docker to mount and copy
+            docker run --rm --privileged -v "$MODEM_FW_DIR":/fw -v "$MODEM_VFAT":/tmp/vfat.img alpine sh -c "
+                mount -o loop /tmp/vfat.img /mnt && mkdir -p /mnt/image &&
+                cp /fw/* /mnt/image/ && umount /mnt" 2>/dev/null
+        fi
+        edl w modem "$MODEM_VFAT" 2>&1 | tail -1
+        rm -f "$MODEM_VFAT"
+    elif [ -f "$BACKUP_DIR/modem.bin" ]; then
+        log "  Restoring modem firmware (raw, 64 MB)..."
         edl w modem "$BACKUP_DIR/modem.bin" 2>&1 | tail -1
     fi
-    if [ -f "$BACKUP_DIR/modemst1.bin" ]; then
+    if [ -f "$BACKUP_DIR/modemst1.bin" ] && [ "$(stat -c%s "$BACKUP_DIR/modemst1.bin")" -gt 1024 ]; then
         log "  Restoring modem calibration..."
         for part in sec fsc fsg modemst1 modemst2; do
             [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
         done
+    else
+        warn "  No valid modemst backup — NV storage will be empty (IMEI may be missing)"
     fi
     log "  Modem restored."
 fi
