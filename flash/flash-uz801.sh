@@ -210,19 +210,62 @@ if [ "$DONGLE_STATE" = "android" ]; then
 
         # Backup all partitions
         BACKUP_PARTS="modem sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
+        BACKUP_ERRORS=0
         for part in $BACKUP_PARTS; do
             echo -n "    $part... "
+            # Get hash on device before transfer
+            REMOTE_MD5=$(adb shell "md5sum /dev/block/bootdevice/by-name/$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+            # Transfer
             adb shell "dd if=/dev/block/bootdevice/by-name/$part 2>/dev/null" > "$BACKUP_DIR/${part}.bin" 2>/dev/null
+            # Verify local hash
+            LOCAL_MD5=$(md5sum "$BACKUP_DIR/${part}.bin" 2>/dev/null | awk '{print $1}')
             SIZE=$(du -h "$BACKUP_DIR/${part}.bin" 2>/dev/null | cut -f1)
-            echo "$SIZE"
+            if [ "$REMOTE_MD5" = "$LOCAL_MD5" ] && [ -n "$REMOTE_MD5" ]; then
+                echo "$SIZE (verified)"
+            else
+                echo "$SIZE (HASH MISMATCH: device=$REMOTE_MD5 local=$LOCAL_MD5)"
+                BACKUP_ERRORS=$((BACKUP_ERRORS + 1))
+            fi
         done
+        if [ "$BACKUP_ERRORS" -gt 0 ]; then
+            warn "  $BACKUP_ERRORS partition(s) have hash mismatches!"
+            warn "  ADB transfer over USB may have corrupted data."
+            echo -ne "${YELLOW}[!]${NC} Continue anyway? [y/N] "
+            read -r CONTINUE
+            [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
+        fi
 
         # GPT
         echo -n "    gpt... "
         adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 2>/dev/null" > "$BACKUP_DIR/gpt_primary.bin" 2>/dev/null
         echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1)"
 
-        log "  Backup complete: $(ls "$BACKUP_DIR"/*.bin 2>/dev/null | wc -l) files"
+        # Modem firmware as individual files (raw partition dump has FAT corruption via ADB dd)
+        log "  Backing up modem firmware files..."
+        MODEM_FW_DIR="$BACKUP_DIR/modem_firmware"
+        mkdir -p "$MODEM_FW_DIR"
+        adb shell "mount -o ro /dev/block/bootdevice/by-name/modem /firmware 2>/dev/null; ls /firmware/image/ 2>/dev/null" | tr -d '\r' | while read -r f; do
+            [ -n "$f" ] && adb pull "/firmware/image/$f" "$MODEM_FW_DIR/$f" >/dev/null 2>&1
+        done
+        # Verify firmware files via hash
+        FW_COUNT=$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)
+        if [ "$FW_COUNT" -gt 0 ]; then
+            FW_ERRORS=0
+            for fw in "$MODEM_FW_DIR"/*; do
+                FNAME=$(basename "$fw")
+                REMOTE_MD5=$(adb shell "md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
+                LOCAL_MD5=$(md5sum "$fw" 2>/dev/null | awk '{print $1}')
+                if [ "$REMOTE_MD5" != "$LOCAL_MD5" ] || [ -z "$REMOTE_MD5" ]; then
+                    warn "    $FNAME: hash mismatch"
+                    FW_ERRORS=$((FW_ERRORS + 1))
+                fi
+            done
+            [ "$FW_ERRORS" -eq 0 ] && log "  Modem firmware: $FW_COUNT files (all verified)" || warn "  Modem firmware: $FW_COUNT files ($FW_ERRORS hash errors)"
+        else
+            warn "  No modem firmware files found on /firmware/image/"
+        fi
+
+        log "  Backup complete: $(ls "$BACKUP_DIR"/*.bin 2>/dev/null | wc -l) partitions + $FW_COUNT firmware files"
         log "  Restore with: bash flash-uz801.sh --restore $BACKUP_DIR"
     else
         warn "  Skipping backup (--skip-backup)"
@@ -406,11 +449,56 @@ done
 
 if $BOOTED; then
     log "Device booted! Waiting for SSH..."
-    sleep 15
-    if ping -c 1 -W 5 192.168.68.1 >/dev/null 2>&1; then
-        log "Dongle reachable at 192.168.68.1"
+    DONGLE_SSH_IP="192.168.68.1"
+    SSH_OPTS_FW="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
+    SSH_PASS_FW="openstick"
+
+    for i in $(seq 1 12); do
+        if SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "echo OK" 2>/dev/null | grep -q OK; then
+            log "SSH connected."
+            break
+        fi
+        sleep 5
+    done
+
+    # Copy modem firmware files to /lib/firmware/ if we have them
+    MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
+    if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
+        log "Copying modem firmware to dongle..."
+        SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "mkdir -p /lib/firmware" 2>/dev/null
+        for fw in "$MODEM_FW_DIR"/*; do
+            SSHPASS="$SSH_PASS_FW" sshpass -e scp $SSH_OPTS_FW "$fw" "root@$DONGLE_SSH_IP:/lib/firmware/" 2>/dev/null
+        done
+        FW_COPIED=$(ls "$MODEM_FW_DIR" | wc -l)
+        log "  Copied $FW_COPIED firmware files to /lib/firmware/"
+
+        # Copy NV storage from partitions to /boot
+        log "Copying modem NV storage..."
+        SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "
+            dd if=/dev/mmcblk0p7 of=/boot/modem_fs1 bs=1M 2>/dev/null
+            dd if=/dev/mmcblk0p8 of=/boot/modem_fs2 bs=1M 2>/dev/null
+            dd if=/dev/mmcblk0p10 of=/boot/modem_fsg bs=1M 2>/dev/null
+            chmod 666 /boot/modem_fs*
+        " 2>/dev/null
+        log "  NV storage copied to /boot/"
+
+        # Reboot for modem to pick up firmware
+        log "Rebooting dongle for modem init..."
+        SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "reboot" 2>/dev/null || true
+        sleep 30
+        for i in $(seq 1 12); do
+            SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "echo OK" 2>/dev/null | grep -q OK && break
+            sleep 5
+        done
+        log "Dongle back after reboot."
     else
-        warn "Dongle not reachable at 192.168.68.1 (may need DHCP or different IP)"
+        warn "No modem firmware files found in backup — IMEI may not work"
+    fi
+
+    if ping -c 1 -W 5 "$DONGLE_SSH_IP" >/dev/null 2>&1; then
+        log "Dongle reachable at $DONGLE_SSH_IP"
+    else
+        warn "Dongle not reachable at $DONGLE_SSH_IP"
     fi
 elif ! lsusb 2>/dev/null | grep -q "18d1:d00d"; then
     warn "Device not detected after 90s."
