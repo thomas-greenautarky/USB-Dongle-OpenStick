@@ -208,46 +208,9 @@ if [ "$DONGLE_STATE" = "android" ]; then
             adb shell "getprop ro.product.model; getprop ro.build.display.id; getprop ro.board.platform" 2>/dev/null
         } > "$BACKUP_DIR/device_info.txt" 2>&1
 
-        # Backup all partitions
-        # Backup partitions via adb pull (NOT adb shell dd | pipe, which corrupts data)
-        # Method: dd to /tmp on device, then adb pull the file
-        BACKUP_PARTS="modem sbl1 sbl1bak rpm rpmbak tz tzbak hyp hypbak aboot abootbak boot recovery sec fsc fsg modemst1 modemst2 DDR ssd misc splash pad persist"
-        BACKUP_ERRORS=0
-        for part in $BACKUP_PARTS; do
-            echo -n "    $part... "
-            # Copy partition to temp file on device
-            adb shell "dd if=/dev/block/bootdevice/by-name/$part of=/data/local/data/local/tmp/_backup_$part bs=1M 2>/dev/null" >/dev/null 2>&1
-            # Get hash on device
-            REMOTE_MD5=$(adb shell "busybox md5sum /data/local/tmp/_backup_$part 2>/dev/null || md5sum /data/local/tmp/_backup_$part 2>/dev/null" | awk '{print $1}' | tr -d '\r')
-            # Pull file (reliable transfer, no pipe corruption)
-            adb pull "/data/local/tmp/_backup_$part" "$BACKUP_DIR/${part}.bin" >/dev/null 2>&1
-            # Clean up temp file
-            adb shell "rm -f /data/local/tmp/_backup_$part" >/dev/null 2>&1
-            # Verify local hash
-            LOCAL_MD5=$(md5sum "$BACKUP_DIR/${part}.bin" 2>/dev/null | awk '{print $1}')
-            SIZE=$(du -h "$BACKUP_DIR/${part}.bin" 2>/dev/null | cut -f1)
-            if [ "$REMOTE_MD5" = "$LOCAL_MD5" ] && [ -n "$REMOTE_MD5" ]; then
-                echo "$SIZE ✓"
-            else
-                echo "$SIZE ✗ MISMATCH (device=$REMOTE_MD5 local=$LOCAL_MD5)"
-                BACKUP_ERRORS=$((BACKUP_ERRORS + 1))
-            fi
-        done
-        if [ "$BACKUP_ERRORS" -gt 0 ]; then
-            warn "  $BACKUP_ERRORS partition(s) have hash mismatches!"
-            echo -ne "${YELLOW}[!]${NC} Continue anyway? [y/N] "
-            read -r CONTINUE
-            [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
-        else
-            log "  All partitions verified ✓"
-        fi
-
-        # GPT (small enough for pipe transfer)
-        echo -n "    gpt... "
-        adb shell "dd if=/dev/block/mmcblk0 bs=512 count=40 of=/data/local/tmp/_backup_gpt 2>/dev/null" >/dev/null 2>&1
-        adb pull "/data/local/tmp/_backup_gpt" "$BACKUP_DIR/gpt_primary.bin" >/dev/null 2>&1
-        adb shell "rm -f /data/local/tmp/_backup_gpt" >/dev/null 2>&1
-        echo "$(du -h "$BACKUP_DIR/gpt_primary.bin" | cut -f1) ✓"
+        # NOTE: Partition backups (modemst, fsg, etc.) are done via EDL in Step 5
+        # (ADB dd over USB is unreliable on Stock Android 4.4)
+        log "  Partition backups will be done via EDL (more reliable than ADB)"
 
         # Modem firmware as individual files (raw partition dump has FAT corruption via ADB dd)
         log "  Backing up modem firmware files..."
@@ -319,19 +282,45 @@ else
     TOTAL_SECTORS_DEC=7634944
 fi
 
-# ─── Step 5: EDL backup (if not done via ADB) ──────────────────────────────
+# ─── Step 5: EDL backup of NV storage (always — ADB dd is unreliable) ──────
 
-if [ -z "$DONGLE_IMEI" ] && ! $SKIP_BACKUP; then
-    log "=== Step 5: EDL Backup ==="
-    BACKUP_DIR="$BACKUP_BASE/edl_backup_$(date +%Y%m%d_%H%M%S)"
+if ! $SKIP_BACKUP; then
+    log "=== Step 5: EDL Backup (NV storage) ==="
+    if [ -z "$BACKUP_DIR" ]; then
+        BACKUP_DIR="$BACKUP_BASE/edl_backup_$(date +%Y%m%d_%H%M%S)"
+    fi
     mkdir -p "$BACKUP_DIR"
 
-    MODEM_PARTS="sec fsc fsg modemst1 modemst2"
-    for part in $MODEM_PARTS; do
-        log "  Reading $part..."
-        edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read " || warn "  Failed: $part"
+    # Always backup NV partitions via EDL (ADB dd over USB corrupts data)
+    NV_PARTS="sec fsc fsg modemst1 modemst2"
+    NV_OK=0
+    NV_TOTAL=0
+    for part in $NV_PARTS; do
+        NV_TOTAL=$((NV_TOTAL + 1))
+        log "  Reading $part via EDL..."
+        if edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+            SIZE=$(du -h "$BACKUP_DIR/${part}.bin" | cut -f1)
+            # Verify: read back and compare
+            edl r "$part" "$BACKUP_DIR/${part}.verify" 2>&1 >/dev/null
+            if [ -f "$BACKUP_DIR/${part}.verify" ] && cmp -s "$BACKUP_DIR/${part}.bin" "$BACKUP_DIR/${part}.verify"; then
+                log "    $part: $SIZE (verified ✓)"
+                NV_OK=$((NV_OK + 1))
+            else
+                warn "    $part: $SIZE (verify FAILED — read twice, got different data)"
+            fi
+            rm -f "$BACKUP_DIR/${part}.verify"
+        else
+            warn "    $part: read failed"
+        fi
     done
-    log "  Backup: $BACKUP_DIR"
+    if [ "$NV_OK" -eq "$NV_TOTAL" ]; then
+        log "  NV backup complete: $NV_OK/$NV_TOTAL partitions verified ✓"
+    else
+        warn "  NV backup incomplete: $NV_OK/$NV_TOTAL verified"
+        echo -ne "${YELLOW}[!]${NC} Continue? IMEI may be lost if NV backup is bad. [y/N] "
+        read -r CONTINUE
+        [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
+    fi
 fi
 
 # ─── Step 6: Generate GPT ──────────────────────────────────────────────────
