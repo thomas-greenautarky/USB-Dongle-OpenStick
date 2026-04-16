@@ -311,6 +311,35 @@ if ! $SKIP_BACKUP; then
         read -r CONTINUE
         [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
     fi
+
+    # Full stock partition backup via EDL (for complete restore to original state)
+    log "  Backing up all stock partitions via EDL..."
+    STOCK_DIR="$BACKUP_DIR/stock_partitions"
+    mkdir -p "$STOCK_DIR"
+
+    # Read GPT first
+    edl rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt: $(du -h "$STOCK_DIR/gpt.bin" | cut -f1) ✓" || warn "    gpt: failed"
+
+    # Read all named partitions from the stock GPT
+    STOCK_PARTS=$(timeout 15 edl printgpt 2>&1 | grep -oP 'Partition\s+\d+:\s+\K\S+' || true)
+    if [ -z "$STOCK_PARTS" ]; then
+        # Fallback: known UZ801 stock partitions
+        STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem DDR splash ssd misc boot recovery persist cache"
+    fi
+    STOCK_COUNT=0
+    for part in $STOCK_PARTS; do
+        # Skip partitions we already backed up (NV) and huge ones (system, userdata, cache)
+        case "$part" in sec|fsc|fsg|modemst1|modemst2|system|userdata|cache) continue ;; esac
+        echo -n "    $part... "
+        if edl r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+            echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
+            STOCK_COUNT=$((STOCK_COUNT + 1))
+        else
+            echo "failed (non-critical)"
+            rm -f "$STOCK_DIR/${part}.bin"
+        fi
+    done
+    log "  Stock backup: $STOCK_COUNT partitions saved to $STOCK_DIR"
 fi
 
 # ─── Step 6: Generate GPT ──────────────────────────────────────────────────
