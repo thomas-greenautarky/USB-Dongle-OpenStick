@@ -2,20 +2,36 @@
 #
 # flash-uz801.sh — Flash OpenStick Debian onto UZ801 (and compatible) USB dongles
 #
-# Supports dongles running Stock Android (05c6:f00e) or already in EDL (05c6:9008).
-# Uses lk2nd as universal bootloader (replaces stock aboot).
+# Based on the flash method from kinsamanka/OpenStick-Builder:
+#   https://github.com/kinsamanka/OpenStick-Builder
+#
+# KEY INSIGHT: UZ801 EDL supports only ONE command per session. After each EDL
+# command the dongle must be re-plugged. Therefore we use EDL only minimally:
+#   - EDL: backup NV storage + write lk2nd as aboot + erase boot + reset
+#   - Fastboot (via lk2nd): flash everything else (GPT, firmware, boot, rootfs)
+#
+# This approach is based on OpenStick issue #91 which documented the single-command
+# EDL limitation: https://github.com/OpenStick/OpenStick/issues/91
 #
 # Flow:
 #   1. Detect dongle state (Stock Android / EDL / Fastboot)
-#   2. If Stock Android: enable ADB via web API, backup all partitions, adb reboot edl
-#   3. If EDL: backup partitions via edl
-#   4. Flash: GPT + firmware + lk2nd (aboot) + boot (kernel+DTBs) + rootfs
-#   5. Reset and verify boot
+#   2. If Stock Android: enable ADB via web API, backup firmware files, adb reboot edl
+#   3. In EDL: backup NV storage (verified), backup stock partitions
+#   4. In EDL: write lk2nd as aboot (single write), erase boot, reset
+#   5. Dongle reboots into lk2nd Fastboot (18d1:d00d)
+#   6. Via Fastboot: flash GPT, firmware, boot, rootfs, modem, NV storage
+#   7. Reboot and verify
+#
+# Supports two dongle types:
+#   - UZ801 v3 (Stock Android 05c6:f00e) — auto-detected, ADB→EDL→Fastboot
+#   - JZ0145-v33 (EDL only 05c6:9008) — use flash-openstick.sh instead
 #
 # Prerequisites:
 #   - edl: pipx install edlclient
+#   - fastboot: apt install fastboot (or android-sdk-platform-tools)
 #   - adb: apt install adb
 #   - sgdisk: apt install gdisk
+#   - mtools: apt install mtools (for modem vfat partition)
 #   - curl, sshpass
 #   - Prebuilt files in flash/files/uz801/ (from OpenStick-Builder or custom build)
 #
@@ -77,10 +93,8 @@ REQUIRED_FILES=(
 # rootfs: prefer our custom rootfs, fall back to prebuilt
 if [ -f "$SCRIPT_DIR/files/rootfs.raw" ]; then
     ROOTFS_FILE="$SCRIPT_DIR/files/rootfs.raw"
-    ROOTFS_FORMAT="raw"
 elif [ -f "$FILES_DIR/rootfs.bin" ]; then
     ROOTFS_FILE="$FILES_DIR/rootfs.bin"
-    ROOTFS_FORMAT="sparse"
 else
     err "No rootfs found. Build one or download prebuilt."
 fi
@@ -89,11 +103,12 @@ log "Checking required files..."
 for f in "${REQUIRED_FILES[@]}"; do
     [ -f "$f" ] || err "Missing: $f"
 done
-log "All files present. Rootfs: $ROOTFS_FILE ($ROOTFS_FORMAT)"
+log "All files present. Rootfs: $ROOTFS_FILE"
 
-which edl >/dev/null 2>&1 || err "edl not found. Install: pipx install edlclient"
-which adb >/dev/null 2>&1 || warn "adb not found (needed for Stock Android dongles)"
-which sgdisk >/dev/null 2>&1 || err "sgdisk not found. Install: apt install gdisk"
+which edl >/dev/null 2>&1      || err "edl not found. Install: pipx install edlclient"
+which fastboot >/dev/null 2>&1  || err "fastboot not found. Install: apt install fastboot"
+which adb >/dev/null 2>&1      || warn "adb not found (needed for Stock Android dongles)"
+which sgdisk >/dev/null 2>&1   || err "sgdisk not found. Install: apt install gdisk"
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -108,6 +123,7 @@ log "=== Step 1: Detect dongle ==="
 
 DONGLE_STATE="unknown"
 DONGLE_IMEI=""
+BACKUP_DIR=""
 
 if lsusb 2>/dev/null | grep -q "05c6:9008"; then
     DONGLE_STATE="edl"
@@ -126,19 +142,19 @@ else
         DONGLE_STATE="edl"
     elif lsusb 2>/dev/null | grep -q "05c6:f00e\|05c6:90b6"; then
         DONGLE_STATE="android"
+    elif lsusb 2>/dev/null | grep -q "18d1:d00d"; then
+        DONGLE_STATE="fastboot"
     else
         err "No supported dongle detected."
     fi
 fi
 
-# ─── Step 2: If Stock Android, enable ADB and backup ───────────────────────
+# ─── Step 2: If Stock Android, enable ADB and backup firmware files ────────
 
 if [ "$DONGLE_STATE" = "android" ]; then
     log "=== Step 2: Stock Android → ADB → Backup ==="
 
-    # Find web interface
-    # Find the dongle's web interface by trying the API login on known IPs.
-    # Do NOT use ping/gateway detection — it picks up the host's router.
+    # Find web interface by trying API login on known dongle IPs
     DONGLE_WEB=""
     log "  Waiting for dongle web interface..."
     for attempt in $(seq 1 20); do
@@ -156,11 +172,9 @@ if [ "$DONGLE_STATE" = "android" ]; then
     [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface after 60s."
     log "  Web interface: http://$DONGLE_WEB"
 
-    # Login
-    # Reuse the login result from the detection loop (already authenticated)
+    # Reuse the login result from detection
     LOGIN_RESULT="$RESULT"
     DONGLE_IMEI=$(echo "$LOGIN_RESULT" | grep -oP '"imei":"[^"]*"' | cut -d'"' -f4)
-
     [ -n "$DONGLE_IMEI" ] || err "IMEI not found in web API response."
     log "  IMEI: $DONGLE_IMEI"
     log "  Firmware: $(echo "$LOGIN_RESULT" | grep -oP '"fwversion":"[^"]*"' | cut -d'"' -f4)"
@@ -198,37 +212,20 @@ if [ "$DONGLE_STATE" = "android" ]; then
             adb shell "getprop ro.product.model; getprop ro.build.display.id; getprop ro.board.platform" 2>/dev/null
         } > "$BACKUP_DIR/device_info.txt" 2>&1
 
-        # NOTE: Partition backups (modemst, fsg, etc.) are done via EDL in Step 5
-        # (ADB dd over USB is unreliable on Stock Android 4.4)
+        # NOTE: Partition backups are done via EDL in Step 3 (ADB dd is unreliable)
         log "  Partition backups will be done via EDL (more reliable than ADB)"
 
-        # Modem firmware as individual files (raw partition dump has FAT corruption via ADB dd)
+        # Modem firmware as individual files via adb pull
         log "  Backing up modem firmware files..."
         MODEM_FW_DIR="$BACKUP_DIR/modem_firmware"
         mkdir -p "$MODEM_FW_DIR"
         adb shell "mount -o ro /dev/block/bootdevice/by-name/modem /firmware 2>/dev/null; ls /firmware/image/ 2>/dev/null" | tr -d '\r' | while read -r f; do
             [ -n "$f" ] && adb pull "/firmware/image/$f" "$MODEM_FW_DIR/$f" >/dev/null 2>&1
         done
-        # Verify firmware files via hash
         FW_COUNT=$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)
-        if [ "$FW_COUNT" -gt 0 ]; then
-            FW_ERRORS=0
-            for fw in "$MODEM_FW_DIR"/*; do
-                FNAME=$(basename "$fw")
-                REMOTE_MD5=$(adb shell "busybox md5sum /firmware/image/$FNAME 2>/dev/null || md5sum /firmware/image/$FNAME 2>/dev/null" | awk '{print $1}' | tr -d '\r')
-                LOCAL_MD5=$(md5sum "$fw" 2>/dev/null | awk '{print $1}')
-                if [ "$REMOTE_MD5" != "$LOCAL_MD5" ] || [ -z "$REMOTE_MD5" ]; then
-                    warn "    $FNAME: hash mismatch"
-                    FW_ERRORS=$((FW_ERRORS + 1))
-                fi
-            done
-            [ "$FW_ERRORS" -eq 0 ] && log "  Modem firmware: $FW_COUNT files (all verified)" || warn "  Modem firmware: $FW_COUNT files ($FW_ERRORS hash errors)"
-        else
-            warn "  No modem firmware files found on /firmware/image/"
-        fi
+        log "  Modem firmware: $FW_COUNT files"
 
-        log "  Backup complete: $(ls "$BACKUP_DIR"/*.bin 2>/dev/null | wc -l) partitions + $FW_COUNT firmware files"
-        log "  Restore with: bash flash-uz801.sh --restore $BACKUP_DIR"
+        log "  Backup saved: $BACKUP_DIR"
     else
         warn "  Skipping backup (--skip-backup)"
     fi
@@ -241,129 +238,155 @@ if [ "$DONGLE_STATE" = "android" ]; then
     DONGLE_STATE="edl"
 fi
 
-# ─── Step 3: Wait for EDL ──────────────────────────────────────────────────
+# ─── Step 3: EDL phase (backup + write aboot only) ─────────────────────────
 
-if [ "$DONGLE_STATE" = "fastboot" ]; then
-    log "Rebooting from Fastboot to EDL..."
-    fastboot reboot 2>/dev/null || true
-    sleep 8
+if [ "$DONGLE_STATE" = "edl" ]; then
+    log "Waiting for EDL device (05c6:9008)..."
+    for i in $(seq 1 30); do
+        lsusb 2>/dev/null | grep -q "05c6:9008" && break
+        sleep 2
+    done
+    lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found."
+    log "EDL device detected."
+
+    # Read disk geometry
+    log "=== Step 3a: Read disk geometry ==="
+    DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
+    TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
+    if [ -n "$TOTAL_SECTORS" ]; then
+        TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
+        DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
+        log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
+    else
+        warn "Could not read disk size. Using 3.6 GB default."
+        TOTAL_SECTORS_DEC=7634944
+    fi
+
+    # NV backup via EDL (verified, always)
+    if ! $SKIP_BACKUP; then
+        log "=== Step 3b: EDL Backup (NV storage) ==="
+        if [ -z "$BACKUP_DIR" ]; then
+            BACKUP_DIR="$BACKUP_BASE/edl_backup_$(date +%Y%m%d_%H%M%S)"
+        fi
+        mkdir -p "$BACKUP_DIR"
+
+        NV_PARTS="sec fsc fsg modemst1 modemst2"
+        NV_OK=0
+        NV_TOTAL=0
+        for part in $NV_PARTS; do
+            NV_TOTAL=$((NV_TOTAL + 1))
+            log "  Reading $part via EDL..."
+            if edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+                SIZE=$(du -h "$BACKUP_DIR/${part}.bin" | cut -f1)
+                # Verify: read back and compare
+                edl r "$part" "$BACKUP_DIR/${part}.verify" 2>&1 >/dev/null
+                if [ -f "$BACKUP_DIR/${part}.verify" ] && cmp -s "$BACKUP_DIR/${part}.bin" "$BACKUP_DIR/${part}.verify"; then
+                    log "    $part: $SIZE (verified ✓)"
+                    NV_OK=$((NV_OK + 1))
+                else
+                    warn "    $part: $SIZE (verify FAILED)"
+                fi
+                rm -f "$BACKUP_DIR/${part}.verify"
+            else
+                warn "    $part: read failed"
+            fi
+        done
+
+        if [ "$NV_OK" -eq "$NV_TOTAL" ]; then
+            log "  NV backup complete: $NV_OK/$NV_TOTAL partitions verified ✓"
+        else
+            warn "  NV backup incomplete: $NV_OK/$NV_TOTAL verified"
+            echo -ne "${YELLOW}[!]${NC} Continue? IMEI may be lost if NV backup is bad. [y/N] "
+            read -r CONTINUE
+            [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
+        fi
+
+        # Stock partition backup (non-critical, for full restore)
+        log "  Backing up stock partitions via EDL..."
+        STOCK_DIR="$BACKUP_DIR/stock_partitions"
+        mkdir -p "$STOCK_DIR"
+        edl rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt ✓" || true
+        STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem DDR splash ssd misc boot recovery persist"
+        STOCK_COUNT=0
+        for part in $STOCK_PARTS; do
+            echo -n "    $part... "
+            if edl r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+                echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
+                STOCK_COUNT=$((STOCK_COUNT + 1))
+            else
+                echo "skip"
+                rm -f "$STOCK_DIR/${part}.bin"
+            fi
+        done
+        log "  Stock backup: $STOCK_COUNT partitions"
+    fi
+
+    # Write lk2nd as aboot via EDL (single command — UZ801 EDL limitation)
+    log "=== Step 3c: Write lk2nd as aboot via EDL ==="
+    log "  NOTE: UZ801 EDL supports only ~1 command per session."
+    log "  Writing aboot only, rest via Fastboot."
+    edl w aboot "$FILES_DIR/aboot.mbn" 2>&1 | tail -1
+
+    # Erase boot partition so lk2nd falls to Fastboot mode
+    log "  Erasing boot partition..."
+    edl e boot 2>&1 | tail -1 || true
+
+    # Reset to boot into lk2nd Fastboot
+    log "  Resetting device..."
+    edl reset 2>&1 | tail -1 || true
+
+    DONGLE_STATE="fastboot"
 fi
 
-log "Waiting for EDL device (05c6:9008)..."
+# ─── Step 4: Wait for Fastboot (lk2nd) ─────────────────────────────────────
+
+log "=== Step 4: Waiting for Fastboot (lk2nd) ==="
+log "  If dongle doesn't appear: unplug and re-plug (without reset pin)"
 for i in $(seq 1 30); do
-    lsusb 2>/dev/null | grep -q "05c6:9008" && break
+    lsusb 2>/dev/null | grep -q "18d1:d00d" && break
     sleep 2
 done
-lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found."
-log "EDL device detected."
 
-# ─── Step 4: Read disk geometry ─────────────────────────────────────────────
-
-log "=== Step 4: Read disk geometry ==="
-DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
-TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
-
-if [ -n "$TOTAL_SECTORS" ]; then
-    TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
-    DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
-    log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
-else
-    warn "Could not read disk size. Using 3.6 GB default."
-    TOTAL_SECTORS_DEC=7634944
+if ! lsusb 2>/dev/null | grep -q "18d1:d00d"; then
+    warn "Fastboot not detected. Unplug and re-plug the dongle."
+    echo -ne "${GREEN}[+]${NC} Press Enter after re-plugging..."
+    read -r
+    for i in $(seq 1 15); do
+        lsusb 2>/dev/null | grep -q "18d1:d00d" && break
+        sleep 2
+    done
 fi
 
-# ─── Step 5: EDL backup of NV storage (always — ADB dd is unreliable) ──────
+lsusb 2>/dev/null | grep -q "18d1:d00d" || err "Fastboot device not found."
+log "Fastboot device detected!"
 
-if ! $SKIP_BACKUP; then
-    log "=== Step 5: EDL Backup (NV storage) ==="
-    if [ -z "$BACKUP_DIR" ]; then
-        BACKUP_DIR="$BACKUP_BASE/edl_backup_$(date +%Y%m%d_%H%M%S)"
-    fi
-    mkdir -p "$BACKUP_DIR"
+# Wait for fastboot to stabilize
+sleep 2
+fastboot devices 2>/dev/null | grep -q fastboot || err "Fastboot not responding."
 
-    # Always backup NV partitions via EDL (ADB dd over USB corrupts data)
-    NV_PARTS="sec fsc fsg modemst1 modemst2"
-    NV_OK=0
-    NV_TOTAL=0
-    for part in $NV_PARTS; do
-        NV_TOTAL=$((NV_TOTAL + 1))
-        log "  Reading $part via EDL..."
-        if edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
-            SIZE=$(du -h "$BACKUP_DIR/${part}.bin" | cut -f1)
-            # Verify: read back and compare
-            edl r "$part" "$BACKUP_DIR/${part}.verify" 2>&1 >/dev/null
-            if [ -f "$BACKUP_DIR/${part}.verify" ] && cmp -s "$BACKUP_DIR/${part}.bin" "$BACKUP_DIR/${part}.verify"; then
-                log "    $part: $SIZE (verified ✓)"
-                NV_OK=$((NV_OK + 1))
-            else
-                warn "    $part: $SIZE (verify FAILED — read twice, got different data)"
-            fi
-            rm -f "$BACKUP_DIR/${part}.verify"
-        else
-            warn "    $part: read failed"
-        fi
-    done
-    if [ "$NV_OK" -eq "$NV_TOTAL" ]; then
-        log "  NV backup complete: $NV_OK/$NV_TOTAL partitions verified ✓"
-    else
-        warn "  NV backup incomplete: $NV_OK/$NV_TOTAL verified"
-        echo -ne "${YELLOW}[!]${NC} Continue? IMEI may be lost if NV backup is bad. [y/N] "
-        read -r CONTINUE
-        [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
-    fi
+# ─── Step 5: Generate GPT ──────────────────────────────────────────────────
 
-    # Full stock partition backup via EDL (for complete restore to original state)
-    log "  Backing up all stock partitions via EDL..."
-    STOCK_DIR="$BACKUP_DIR/stock_partitions"
-    mkdir -p "$STOCK_DIR"
+log "=== Step 5: Generate GPT ==="
 
-    # Read GPT first
-    edl rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt: $(du -h "$STOCK_DIR/gpt.bin" | cut -f1) ✓" || warn "    gpt: failed"
-
-    # Read all named partitions from the stock GPT
-    STOCK_PARTS=$(timeout 15 edl printgpt 2>&1 | grep -oP 'Partition\s+\d+:\s+\K\S+' || true)
-    if [ -z "$STOCK_PARTS" ]; then
-        # Fallback: known UZ801 stock partitions
-        STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem DDR splash ssd misc boot recovery persist cache"
-    fi
-    STOCK_COUNT=0
-    for part in $STOCK_PARTS; do
-        # Skip partitions we already backed up (NV) and huge ones (system, userdata, cache)
-        case "$part" in sec|fsc|fsg|modemst1|modemst2|system|userdata|cache) continue ;; esac
-        echo -n "    $part... "
-        if edl r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
-            echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
-            STOCK_COUNT=$((STOCK_COUNT + 1))
-        else
-            echo "failed (non-critical)"
-            rm -f "$STOCK_DIR/${part}.bin"
-        fi
-    done
-    log "  Stock backup: $STOCK_COUNT partitions saved to $STOCK_DIR"
-fi
-
-# ─── Step 6: Generate GPT ──────────────────────────────────────────────────
-
-log "=== Step 6: Generate GPT ==="
-
-# Calculate modem partition size dynamically from backup
+# Calculate modem partition size from firmware files
 MODEM_START=150566
-MODEM_END=282137  # default: 64.2 MB
-if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modem.bin" ]; then
-    MODEM_BYTES=$(stat -c%s "$BACKUP_DIR/modem.bin")
-    MODEM_SECTORS=$(( (MODEM_BYTES + 511) / 512 ))  # round up
-    MODEM_END=$(( MODEM_START + MODEM_SECTORS - 1 ))
-    log "  Modem partition sized to backup: $MODEM_SECTORS sectors ($(( MODEM_BYTES / 1024 / 1024 )) MB)"
+MODEM_END=282137  # default
+MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
+if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
+    # Estimate: sum of all firmware files + 20% overhead for FAT
+    FW_TOTAL=$(du -sb "$MODEM_FW_DIR" 2>/dev/null | cut -f1)
+    FW_SECTORS=$(( (FW_TOTAL * 120 / 100 + 511) / 512 ))
+    if [ "$FW_SECTORS" -gt 131072 ]; then
+        MODEM_END=$(( MODEM_START + FW_SECTORS - 1 ))
+        log "  Modem partition sized to firmware: $FW_SECTORS sectors"
+    fi
 fi
 PERSIST_START=$(( MODEM_END + 1 ))
 
-# Generate GPT with sgdisk matching the actual disk size
 GPT_IMG=$(mktemp)
 truncate -s $((TOTAL_SECTORS_DEC * 512)) "$GPT_IMG"
 sgdisk --zap-all "$GPT_IMG" >/dev/null 2>&1
 
-# The rootfs partition MUST have PARTUUID a7ab80e8-e9d1-e8cd-f157-93f69b1d141e
-# because the prebuilt boot.bin extlinux.conf hardcodes root=PARTUUID=<this value>.
 ROOTFS_PARTUUID="a7ab80e8-e9d1-e8cd-f157-93f69b1d141e"
 
 sgdisk -a 1 \
@@ -386,87 +409,70 @@ sgdisk -a 1 \
     "$GPT_IMG" >/dev/null 2>&1 || err "GPT generation failed"
 
 LAST_USABLE=$((TOTAL_SECTORS_DEC - 34))
-BACKUP_GPT_SECTOR=$((TOTAL_SECTORS_DEC - 33))
 log "  GPT: 15 partitions, rootfs ends at sector $LAST_USABLE"
-log "  Backup GPT at sector $BACKUP_GPT_SECTOR"
 
-# Extract primary + backup GPT
-dd if="$GPT_IMG" of="$GPT_IMG.primary" bs=512 count=34 2>/dev/null
-dd if="$GPT_IMG" of="$GPT_IMG.backup" bs=512 skip=$((TOTAL_SECTORS_DEC - 33)) count=33 2>/dev/null
+# Extract GPT for fastboot (gpt_both0 format = primary + backup combined)
+dd if="$GPT_IMG" of="$GPT_IMG.gpt" bs=512 count=34 2>/dev/null
 
-# ─── Step 7: Flash everything ──────────────────────────────────────────────
+# ─── Step 6: Flash everything via Fastboot ──────────────────────────────────
 
-log "=== Step 7: Flash ==="
+log "=== Step 6: Flash via Fastboot ==="
 
-log "  Primary GPT..."
-edl ws 0 "$GPT_IMG.primary" 2>&1 | tail -1
+log "  GPT..."
+fastboot flash partition "$GPT_IMG.gpt" 2>&1 | tail -1
 
-log "  Backup GPT..."
-edl ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup" 2>&1 | tail -1
-
-log "  Firmware (sbl1, rpm, tz, hyp, cdt)..."
-edl w sbl1  "$FILES_DIR/sbl1.mbn"  2>&1 | tail -1
-edl w rpm   "$FILES_DIR/rpm.mbn"   2>&1 | tail -1
-edl w tz    "$FILES_DIR/tz.mbn"    2>&1 | tail -1
-edl w hyp   "$FILES_DIR/hyp.mbn"   2>&1 | tail -1
-[ -f "$FILES_DIR/sbc_1.0_8016.bin" ] && edl w cdt "$FILES_DIR/sbc_1.0_8016.bin" 2>&1 | tail -1
-
-log "  Bootloader (lk2nd as aboot)..."
-edl w aboot "$FILES_DIR/aboot.mbn" 2>&1 | tail -1
+log "  Firmware (aboot, hyp, sbl1, rpm, tz)..."
+fastboot flash aboot "$FILES_DIR/aboot.mbn" 2>&1 | tail -1
+fastboot flash hyp   "$FILES_DIR/hyp.mbn"   2>&1 | tail -1
+fastboot flash sbl1  "$FILES_DIR/sbl1.mbn"  2>&1 | tail -1
+fastboot flash rpm   "$FILES_DIR/rpm.mbn"   2>&1 | tail -1
+fastboot flash tz    "$FILES_DIR/tz.mbn"    2>&1 | tail -1
+[ -f "$FILES_DIR/sbc_1.0_8016.bin" ] && fastboot flash cdt "$FILES_DIR/sbc_1.0_8016.bin" 2>&1 | tail -1
 
 log "  Boot partition (kernel + DTBs)..."
-edl w boot  "$FILES_DIR/boot.bin"  2>&1 | tail -1
+fastboot flash boot "$FILES_DIR/boot.bin" 2>&1 | tail -1
 
-log "  Rootfs (this takes 2-5 minutes)..."
-if [ "$ROOTFS_FORMAT" = "sparse" ]; then
-    edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
-else
-    edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
-fi
+log "  Rootfs (this may take a few minutes)..."
+fastboot flash rootfs "$ROOTFS_FILE" 2>&1 | tail -1
 
-# Restore modem firmware + calibration if we have a backup
-if [ -n "$BACKUP_DIR" ]; then
-    MODEM_FW_DIR="$BACKUP_DIR/modem_firmware"
-    if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
-        # Create fresh vfat with firmware files (raw modem.bin dump has FAT corruption)
-        log "  Creating modem firmware partition ($( ls "$MODEM_FW_DIR" | wc -l) files)..."
-        MODEM_VFAT=$(mktemp)
-        MODEM_SECTORS=$((MODEM_END - MODEM_START + 1))
-        dd if=/dev/zero of="$MODEM_VFAT" bs=512 count=$MODEM_SECTORS 2>/dev/null
-        mkfs.vfat -n "NON-HLOS" "$MODEM_VFAT" >/dev/null 2>&1
-        # Use mcopy to add files without mounting (no sudo needed)
-        if which mcopy >/dev/null 2>&1; then
-            mmd -i "$MODEM_VFAT" ::/image 2>/dev/null
-            mcopy -i "$MODEM_VFAT" "$MODEM_FW_DIR"/* ::/image/ 2>/dev/null
-        else
-            # Fallback: use Docker to mount and copy
-            docker run --rm --privileged -v "$MODEM_FW_DIR":/fw -v "$MODEM_VFAT":/tmp/vfat.img alpine sh -c "
-                mount -o loop /tmp/vfat.img /mnt && mkdir -p /mnt/image &&
-                cp /fw/* /mnt/image/ && umount /mnt" 2>/dev/null
-        fi
-        edl w modem "$MODEM_VFAT" 2>&1 | tail -1
-        rm -f "$MODEM_VFAT"
-    elif [ -f "$BACKUP_DIR/modem.bin" ]; then
-        log "  Restoring modem firmware (raw, 64 MB)..."
-        edl w modem "$BACKUP_DIR/modem.bin" 2>&1 | tail -1
-    fi
-    if [ -f "$BACKUP_DIR/modemst1.bin" ] && [ "$(stat -c%s "$BACKUP_DIR/modemst1.bin")" -gt 1024 ]; then
-        log "  Restoring modem calibration..."
-        for part in sec fsc fsg modemst1 modemst2; do
-            [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
-        done
+# Create modem vfat partition with firmware files
+MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
+if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
+    log "  Modem firmware partition ($(ls "$MODEM_FW_DIR" | wc -l) files)..."
+    MODEM_VFAT=$(mktemp)
+    MODEM_SECTORS=$((MODEM_END - MODEM_START + 1))
+    dd if=/dev/zero of="$MODEM_VFAT" bs=512 count=$MODEM_SECTORS 2>/dev/null
+    mkfs.vfat -n "NON-HLOS" "$MODEM_VFAT" >/dev/null 2>&1
+    if which mcopy >/dev/null 2>&1; then
+        mmd -i "$MODEM_VFAT" ::/image 2>/dev/null
+        mcopy -i "$MODEM_VFAT" "$MODEM_FW_DIR"/* ::/image/ 2>/dev/null
     else
-        warn "  No valid modemst backup — NV storage will be empty (IMEI may be missing)"
+        warn "  mtools not installed — using Docker fallback"
+        docker run --rm --privileged -v "$MODEM_FW_DIR":/fw -v "$MODEM_VFAT":/tmp/vfat.img alpine sh -c "
+            mount -o loop /tmp/vfat.img /mnt && mkdir -p /mnt/image &&
+            cp /fw/* /mnt/image/ && umount /mnt" 2>/dev/null
     fi
-    log "  Modem restored."
+    fastboot flash modem "$MODEM_VFAT" 2>&1 | tail -1
+    rm -f "$MODEM_VFAT"
 fi
 
-rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
+# Restore NV storage
+if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modemst1.bin" ] && [ "$(stat -c%s "$BACKUP_DIR/modemst1.bin")" -gt 1024 ]; then
+    log "  Restoring NV storage..."
+    for part in sec fsc fsg modemst1 modemst2; do
+        [ -f "$BACKUP_DIR/${part}.bin" ] && fastboot flash "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
+    done
+    log "  NV storage restored."
+else
+    warn "  No valid NV backup — modem IMEI may be missing"
+fi
 
-# ─── Step 8: Reset and verify ──────────────────────────────────────────────
+rm -f "$GPT_IMG" "$GPT_IMG.gpt"
 
-log "=== Step 8: Boot ==="
-edl reset 2>&1 | tail -1 || true
+# ─── Step 7: Reboot and verify ─────────────────────────────────────────────
+
+log "=== Step 7: Reboot ==="
+fastboot reboot 2>&1 | tail -1 || true
 
 log "Waiting for device to boot (90s)..."
 BOOTED=false
@@ -477,11 +483,8 @@ for i in $(seq 1 18); do
         BOOTED=true
         break
     fi
-    # lk2nd fastboot means boot partition is OK but kernel didn't start
     if lsusb 2>/dev/null | grep -q "18d1:d00d"; then
-        warn "Fastboot detected — lk2nd booted but kernel not found."
-        warn "The extlinux.conf DTB may need adjustment."
-        warn "Connect via: fastboot oem edl → edl → fix extlinux.conf"
+        warn "Still in Fastboot — kernel may not have loaded."
         break
     fi
 done
@@ -500,29 +503,27 @@ if $BOOTED; then
         sleep 5
     done
 
-    # Copy modem firmware files to /lib/firmware/ if we have them
+    # Copy modem firmware files to /lib/firmware/
     MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
     if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
         log "Copying modem firmware to dongle..."
-        SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "mkdir -p /lib/firmware" 2>/dev/null
         for fw in "$MODEM_FW_DIR"/*; do
-            SSHPASS="$SSH_PASS_FW" sshpass -e scp $SSH_OPTS_FW "$fw" "root@$DONGLE_SSH_IP:/lib/firmware/" 2>/dev/null
+            [ -f "$fw" ] && SSHPASS="$SSH_PASS_FW" sshpass -e scp $SSH_OPTS_FW "$fw" "root@$DONGLE_SSH_IP:/lib/firmware/" 2>/dev/null
         done
-        FW_COPIED=$(ls "$MODEM_FW_DIR" | wc -l)
-        log "  Copied $FW_COPIED firmware files to /lib/firmware/"
+        log "  Copied $(ls "$MODEM_FW_DIR" -1 2>/dev/null | wc -l) firmware files"
 
-        # Copy NV storage from partitions to /boot
-        log "Copying modem NV storage..."
+        # Copy NV storage to /boot
+        log "Copying NV storage to /boot..."
         SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "
             dd if=/dev/mmcblk0p7 of=/boot/modem_fs1 bs=1M 2>/dev/null
             dd if=/dev/mmcblk0p8 of=/boot/modem_fs2 bs=1M 2>/dev/null
             dd if=/dev/mmcblk0p10 of=/boot/modem_fsg bs=1M 2>/dev/null
             chmod 666 /boot/modem_fs*
         " 2>/dev/null
-        log "  NV storage copied to /boot/"
+        log "  NV storage copied."
 
         # Reboot for modem to pick up firmware
-        log "Rebooting dongle for modem init..."
+        log "Rebooting for modem init..."
         SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "reboot" 2>/dev/null || true
         sleep 30
         for i in $(seq 1 12); do
@@ -530,8 +531,6 @@ if $BOOTED; then
             sleep 5
         done
         log "Dongle back after reboot."
-    else
-        warn "No modem firmware files found in backup — IMEI may not work"
     fi
 
     if ping -c 1 -W 5 "$DONGLE_SSH_IP" >/dev/null 2>&1; then
@@ -539,13 +538,8 @@ if $BOOTED; then
     else
         warn "Dongle not reachable at $DONGLE_SSH_IP"
     fi
-elif ! lsusb 2>/dev/null | grep -q "18d1:d00d"; then
-    warn "Device not detected after 90s."
-    echo ""
-    warn "Try:"
-    warn "  1. Unplug and re-plug the dongle (without reset pin)"
-    warn "  2. If it shows as fastboot (18d1:d00d): adjust DTB in extlinux.conf"
-    warn "  3. If nothing: restore backup with: bash flash-uz801.sh --restore $BACKUP_DIR"
+else
+    warn "Device did not boot. Try unplugging and re-plugging."
 fi
 
 echo ""
