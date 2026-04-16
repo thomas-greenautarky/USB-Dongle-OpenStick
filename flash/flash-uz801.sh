@@ -137,41 +137,31 @@ if [ "$DONGLE_STATE" = "android" ]; then
     log "=== Step 2: Stock Android → ADB → Backup ==="
 
     # Find web interface
-    # Wait for the dongle's USB network interface to get a DHCP lease
+    # Find the dongle's web interface by trying the API login on known IPs.
+    # Do NOT use ping/gateway detection — it picks up the host's router.
     DONGLE_WEB=""
-    log "  Waiting for USB network interface..."
-    for attempt in $(seq 1 12); do
-        # Find the dongle's USB ethernet interface (enx*)
-        DONGLE_IFACE=$(ip -br addr 2>/dev/null | grep "^enx" | grep -v "DOWN" | head -1 | awk '{print $1}')
-        if [ -n "$DONGLE_IFACE" ]; then
-            # Get the gateway IP from this interface (= dongle's web UI)
-            DONGLE_GW=$(ip route 2>/dev/null | grep "dev $DONGLE_IFACE" | grep -oP 'via \K[0-9.]+' | head -1)
-            if [ -z "$DONGLE_GW" ]; then
-                # No gateway yet, try common dongle IPs on this interface only
-                for ip in 192.168.100.1 192.168.0.1; do
-                    if ping -c 1 -W 2 -I "$DONGLE_IFACE" "$ip" >/dev/null 2>&1; then
-                        DONGLE_GW="$ip"
-                        break
-                    fi
-                done
+    log "  Waiting for dongle web interface..."
+    for attempt in $(seq 1 20); do
+        for ip in 192.168.100.1 192.168.0.1; do
+            RESULT=$(curl -s --connect-timeout 2 --max-time 5 "http://$ip:80/ajax" \
+                -d '{"funcNo":1000,"username":"admin","password":"admin"}' 2>/dev/null)
+            if echo "$RESULT" | grep -q '"flag":"1"'; then
+                DONGLE_WEB="$ip"
+                break 2
             fi
-            [ -n "$DONGLE_GW" ] && DONGLE_WEB="$DONGLE_GW" && break
-        fi
+        done
         sleep 3
     done
 
-    [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface. No USB network with gateway found."
-    log "  Web interface: http://$DONGLE_WEB (via $DONGLE_IFACE)"
+    [ -n "$DONGLE_WEB" ] || err "Cannot reach dongle web interface after 60s."
+    log "  Web interface: http://$DONGLE_WEB"
 
     # Login
-    LOGIN_RESULT=$(curl -s --connect-timeout 5 --max-time 10 "http://$DONGLE_WEB:80/ajax" \
-        -d '{"funcNo":1000,"username":"admin","password":"admin"}' 2>&1)
+    # Reuse the login result from the detection loop (already authenticated)
+    LOGIN_RESULT="$RESULT"
     DONGLE_IMEI=$(echo "$LOGIN_RESULT" | grep -oP '"imei":"[^"]*"' | cut -d'"' -f4)
 
-    if [ -z "$DONGLE_IMEI" ]; then
-        warn "Login failed or IMEI not found. Trying default credentials..."
-        err "Cannot login to dongle web interface."
-    fi
+    [ -n "$DONGLE_IMEI" ] || err "IMEI not found in web API response."
     log "  IMEI: $DONGLE_IMEI"
     log "  Firmware: $(echo "$LOGIN_RESULT" | grep -oP '"fwversion":"[^"]*"' | cut -d'"' -f4)"
 
