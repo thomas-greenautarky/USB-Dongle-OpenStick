@@ -1,0 +1,44 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260416_123149.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in EDL mode (05c6:9008)
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;32m[+][0m EDL device detected.
+[0;32m[+][0m === Step 4: Read disk geometry ===
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260416_123149.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in EDL mode (05c6:9008)
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;32m[+][0m EDL device detected.
+[0;32m[+][0m === Step 4: Read disk geometry ===
+[1;33m[!][0m Could not read disk size. Using 3.6 GB default.
+[0;32m[+][0m === Step 5: EDL Backup (NV storage) ===
+[0;32m[+][0m   Reading sec via EDL...
+[1;33m[!][0m     sec: read failed
+[0;32m[+][0m   Reading fsc via EDL...
+[1;33m[!][0m     fsc: read failed
+[0;32m[+][0m   Reading fsg via EDL...
+[1;33m[!][0m     fsg: read failed
+[0;32m[+][0m   Reading modemst1 via EDL...
+[1;33m[!][0m     modemst1: read failed
+[0;32m[+][0m   Reading modemst2 via EDL...
+[1;33m[!][0m     modemst2: read failed
+[1;33m[!][0m   NV backup incomplete: 0/5 verified
+[1;33m[!][0m Continue? IMEI may be lost if NV backup is bad. [y/N] [0;32m[+][0m   Disk: 3728 MB (7634944 sectors)
+[0;32m[+][0m === Step 6: Generate GPT ===
+[0;32m[+][0m   GPT: 15 partitions, rootfs ends at sector 7634910
+[0;32m[+][0m   Backup GPT at sector 7634911
+[0;32m[+][0m === Step 7: Flash ===
+[0;32m[+][0m   Primary GPT...
+Wrote /tmp/tmp.aw0JsMVoCa.primary to sector 0.
+[0;32m[+][0m   Backup GPT...
+Wrote /tmp/tmp.aw0JsMVoCa.backup to sector 7634911.
+[0;32m[+][0m   Firmware (sbl1, rpm, tz, hyp, cdt)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbl1.mbn to sector 131076.
+[0;31m[x][0m Aborted.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/rpm.mbn to sector 132100.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/tz.mbn to sector 133124.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/hyp.mbn to sector 135172.
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/sbc_1.0_8016.bin to sector 131072.
+[0;32m[+][0m   Bootloader (lk2nd as aboot)...
+Wrote /home/user/git/USB-Dongle-OpenStick/flash/files/uz801/aboot.mbn to sector 148518.
+[0;32m[+][0m   Boot partition (kernel + DTBs)...

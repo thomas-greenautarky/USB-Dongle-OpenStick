@@ -1,0 +1,8 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260416_112000.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for USB network interface...
+[0;32m[+][0m   Web interface: http://192.168.1.1 (via enxa0cec8cec391)
+[1;33m[!][0m Login failed or IMEI not found. Trying default credentials...
+[0;31m[x][0m Cannot login to dongle web interface.

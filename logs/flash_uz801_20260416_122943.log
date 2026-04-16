@@ -1,0 +1,45 @@
+[0;32m[+][0m Logging to: /home/user/git/USB-Dongle-OpenStick/flash/../logs/flash_uz801_20260416_122943.log
+[0;32m[+][0m === Step 1: Detect dongle ===
+[0;32m[+][0m Dongle in Stock Android mode
+[0;32m[+][0m === Step 2: Stock Android → ADB → Backup ===
+[0;32m[+][0m   Waiting for dongle web interface...
+[0;32m[+][0m   Web interface: http://192.168.100.1
+[0;32m[+][0m   IMEI: 860018046136603
+[0;32m[+][0m   Firmware: UZ801-V2.3.15.1
+[0;32m[+][0m   Enabling ADB via /usbdebug.html (funcNo:2001)...
+[0;32m[+][0m   Waiting for ADB...
+[1;33m[!][0m ADB not detected after enable. Waiting 10s...
+[0;32m[+][0m   ADB connected.
+[0;32m[+][0m   Backing up to: /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136603_20260416
+[0;32m[+][0m   Partition backups will be done via EDL (more reliable than ADB)
+[0;32m[+][0m   Backing up modem firmware files...
+adb: no devices/emulators found
+[1;33m[!][0m     cmnlib.b00: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     cmnlib.b01: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     cmnlib.b02: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     cmnlib.b03: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     cmnlib.mdt: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     isdbtmm.b00: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     isdbtmm.b01: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     isdbtmm.b02: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     isdbtmm.b03: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     isdbtmm.mdt: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     keymaste.b00: hash mismatch
+adb: no devices/emulators found
+[1;33m[!][0m     keymaste.b01: hash mismatch
+[1;33m[!][0m   Modem firmware: 12 files (12 hash errors)
+[0;32m[+][0m   Backup complete: 0 partitions + 12 firmware files
+[0;32m[+][0m   Restore with: bash flash-uz801.sh --restore /home/user/git/USB-Dongle-OpenStick/flash/../backup/stock_uz801_860018046136603_20260416
+[0;32m[+][0m   Rebooting to EDL...
+[0;32m[+][0m Waiting for EDL device (05c6:9008)...
+[0;31m[x][0m EDL device not found.
