@@ -110,12 +110,16 @@ SKIP_STOCK_BACKUP=true  # Default: skip the 12-partition stock backup (64MB mode
                         # corrupts USB state before first write — see docs).
                         # NV backup (5 small reads) is always done unless --skip-backup.
 RESTORE_DIR=""
+PROBE_ONLY=false
+PROBE_FILE=""           # where to write probe info (consumed by provision.sh)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-backup)        SKIP_BACKUP=true; shift ;;
         --full-stock-backup)  SKIP_STOCK_BACKUP=false; shift ;;
         --restore)            RESTORE_DIR="$2"; shift 2 ;;
+        --probe-only)         PROBE_ONLY=true; shift ;;
+        --probe-file)         PROBE_FILE="$2"; shift 2 ;;
         *) err "Unknown option: $1" ;;
     esac
 done
@@ -298,18 +302,46 @@ done
 lsusb 2>/dev/null | grep -q "05c6:9008" || err "EDL device not found."
 log "EDL device detected."
 
-# ─── Step 3a: Read disk geometry ───────────────────────────────────────────
+# ─── Step 3a: Probe hardware (identify before flashing) ────────────────────
 
-log "--- Reading disk geometry ---"
-DISK_INFO=$(timeout 15 edl "${EDL_OPTS[@]}" printgpt 2>&1 | grep -i "Total disk size" || true)
-TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
-if [ -n "$TOTAL_SECTORS" ]; then
-    TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
+log "--- Probing hardware ---"
+PROBE_OUT=$(timeout 20 edl "${EDL_OPTS[@]}" printgpt 2>&1 || true)
+
+DONGLE_HWID=$(echo "$PROBE_OUT"  | grep -oP 'HWID:\s*\K0x[0-9a-fA-F]+' | head -1)
+DONGLE_MSM_ID=$(echo "$PROBE_OUT" | grep -oP 'MSM_ID:\K0x[0-9a-fA-F]+' | head -1)
+DONGLE_PK_HASH=$(echo "$PROBE_OUT" | grep -oP 'PK_HASH:\s*\K0x[0-9a-fA-F]+' | head -1)
+DONGLE_MEM=$(echo "$PROBE_OUT" | grep -oP 'MemoryName=\K[^ ]*' | head -1)
+TOTAL_SECTORS_HEX=$(echo "$PROBE_OUT" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
+if [ -n "$TOTAL_SECTORS_HEX" ]; then
+    TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS_HEX))
     DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
-    log "  Disk: ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
 else
     warn "Could not read disk size. Using 3.6 GB default."
     TOTAL_SECTORS_DEC=7634944
+    DISK_SIZE_MB=$((TOTAL_SECTORS_DEC * 512 / 1024 / 1024))
+fi
+
+log "  HWID:      ${DONGLE_HWID:-unknown}"
+log "  MSM_ID:    ${DONGLE_MSM_ID:-unknown} $([ "$DONGLE_MSM_ID" = "0x007050e1" ] && echo '(MSM8916/APQ8016)')"
+log "  Memory:    ${DONGLE_MEM:-unknown}"
+log "  Disk:      ${DISK_SIZE_MB} MB ($TOTAL_SECTORS_DEC sectors)"
+
+# Persist probe info for consumption by provision.sh
+if [ -n "$PROBE_FILE" ]; then
+    {
+        echo "hwid=${DONGLE_HWID:-}"
+        echo "msm_id=${DONGLE_MSM_ID:-}"
+        echo "pk_hash=${DONGLE_PK_HASH:-}"
+        echo "memory=${DONGLE_MEM:-}"
+        echo "emmc_sectors=$TOTAL_SECTORS_DEC"
+        echo "emmc_size_mb=$DISK_SIZE_MB"
+    } > "$PROBE_FILE"
+    log "  Probe info → $PROBE_FILE"
+fi
+
+if $PROBE_ONLY; then
+    log "Probe-only mode: exiting without flash."
+    exit 0
 fi
 
 # ─── Step 3b: NV backup via EDL (verified) ─────────────────────────────────
