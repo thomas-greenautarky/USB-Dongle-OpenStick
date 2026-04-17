@@ -28,38 +28,42 @@ automated APN configuration.
 
 ## Quick Start
 
-### Prerequisites
+For routine fleet provisioning use the
+[OpenStick-Provisioner](https://github.com/thomas-greenautarky/OpenStick-Provisioner)
+wrapper — it automates detection, flashing, config, LTE, NetBird, tests, and DB
+recording end-to-end. Both repos are expected to sit side-by-side (e.g. in
+`~/git/USB-Dongle-OpenStick/` and `~/git/OpenStick-Provisioner/`).
+
+See also:
+- [`docs/variant-strategy.md`](docs/variant-strategy.md) — why we build **one**
+  universal rootfs instead of per-dongle-variant builds, and the rules that
+  keep it that way.
+- [`docs/dongle-compatibility.md`](docs/dongle-compatibility.md) — supported
+  dongle variants, EDL instability causes and mitigations (Qualcomm loader
+  quirks, modem firmware auto-heal, LED service, etc.).
+
+### Standalone flash (no provisioner)
 
 ```bash
 # Install tools
 pipx install edlclient     # Qualcomm EDL flash tool
-sudo apt install android-sdk-libsparse-utils  # simg2img for image conversion
+sudo apt install android-sdk-libsparse-utils gdisk mtools  # simg2img, sgdisk, mkfs.vfat
+
+# UZ801 variant — works from Stock Android or EDL:
+cd flash && bash flash-uz801.sh
+# Probe-only (diagnostic, no writes):
+bash flash-uz801.sh --probe-only
+# Force a specific Firehose loader (rare — only if default fails):
+bash flash-uz801.sh --loader /path/to/loader.bin
+
+# JZ0145-v33 variant — enter EDL via reset pin first:
+cd flash && bash flash-openstick.sh
 ```
 
-### Flash OpenStick (EDL-only method)
-
-```bash
-# 1. Enter EDL: hold reset button while plugging in USB
-#    (or from stock Android: adb reboot edl)
-
-# 2. Run the flash script:
-cd flash
-bash flash-openstick.sh
-# The script automatically:
-#   - Backs up device-specific modem calibration (IMEI, RF cal) before flashing
-#   - Flashes GPT, firmware, kernel, and Debian rootfs via EDL
-#   - Restores modem calibration after flashing
-# No manual backup step needed — safe for any stick, including brand-new ones.
-
-# 3. After Debian boots, configure the dongle:
-bash configure-dongle.sh \
-  --hostname my-dongle \
-  --derive-wifi-psk \
-  --apn "internet" \
-  --ssh-key ~/.ssh/id_ed25519.pub \
-  --timezone Europe/Berlin
-# WiFi SSID (GA-XXXX) and password are auto-derived from IMEI + shared secret in .env
-```
+The UZ801 script handles both stock-Android and EDL-only entry paths, probes
+hardware before writing, falls back to bundled reference modem firmware when
+no ADB backup is available, and uses the Qualcomm factory Firehose loader by
+default (avoids USB Overflow on certain hardware revisions).
 
 ### Manual Flash (step by step)
 
