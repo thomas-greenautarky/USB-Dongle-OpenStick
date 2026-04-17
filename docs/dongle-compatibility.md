@@ -90,6 +90,27 @@ Key design decisions:
 - **rootfs PARTUUID is fixed** (`a7ab80e8-e9d1-e8cd-f157-93f69b1d141e`) to match `extlinux.conf`
 - **Firmware** (sbl1, rpm, tz) comes from Linaro DragonBoard410c (universal for MSM8916)
 - **Modem firmware + calibration** is backed up from each dongle and restored after flash
+- **Reference modem firmware** (`flash/files/uz801/modem_firmware/`) is shipped
+  as fallback for EDL-only flashes (no ADB access)
+
+## Pre-Flash Hardware Probe
+
+Before flashing, `flash-uz801.sh` reads identifying info via Sahara from the
+PBL so orchestrators can know what they're dealing with:
+
+| Feld | Wert (UZ801 v3) | Beschreibung |
+|---|---|---|
+| HWID | `0x007050e100000000` | Full HWID including OEM/MODEL fuses |
+| MSM_ID | `0x007050e1` | Chip family — 0x007050e1 = MSM8916/APQ8016 |
+| eMMC sectors | 7634944 (3.6 GB) | Varies per dongle revision |
+| MemoryName | eMMC | from Firehose storage response |
+
+Run via `--probe-only` (diagnostic, no flash) or `--probe-file <path>`
+(writes key=value env file for consumption by provision.sh).
+
+provision.sh reads this plus the device-tree model from Debian post-boot
+(`/sys/firmware/devicetree/base/model` and `compatible`) and stores
+everything in the DB for fleet management.
 
 ## Provisioning Flow
 
@@ -148,82 +169,160 @@ cd flash && bash flash-uz801.sh --restore ../backup/stock_uz801_<IMEI>_<date>/
 cd flash && bash restore-dongle.sh ../backup/autosave_<timestamp>/
 ```
 
-## EDL Instabilität & Mitigation
+## EDL Instability & Mitigation
 
-Das Sahara/Firehose Protokoll auf MSM8916 ist **zustandsbehaftet** und
-unverzeihlich bei Fehlern. Die häufigsten Probleme und ihre Ursachen:
+The Sahara/Firehose protocol on MSM8916 is **stateful** and unforgiving
+on errors. Known failure modes and mitigations:
 
-### Sahara hat nur ein Hello-Paket
-Nach einem Fehlschlag (Timeout, Loader-Upload abgebrochen, USB-Glitch) bleibt
-der PBL im Error-State. Weitere `edl` Kommandos schlagen mit
-`"Connection already detected, quiting"` oder `"Sahara timeout"` fehl —
-**ohne vollen Power-Cycle ist kein Recovery möglich**.
+### Sahara has only one Hello packet
+After any failure (timeout, aborted loader upload, USB glitch), the PBL
+stays in an error state. Subsequent `edl` commands fail with
+`"Connection already detected, quiting"` or `"Sahara timeout"` —
+**full power cycle is the only way out**.
 
-→ Mitigation: Nach JEDEM Fehler Dongle unplug → 3 s warten → replug.
-Niemals `edl` Kommandos auf demselben USB-Plug wiederholen.
+→ Mitigation: after any failure, unplug → wait 3 s → replug. Never retry
+`edl` commands on the same USB session.
 
-### EDL-Timeout bei zu später Aktion
-Bleibt der Dongle zu lange in EDL ohne Firehose-Upload, triggert der PBL
-einen internen Timeout. Nächster Kontakt schlägt fehl.
+### EDL timeout when idle too long
+If the dongle stays in EDL without uploading the Firehose programmer,
+the PBL triggers an internal timeout. The next command fails.
 
-→ Mitigation: Zwischen `adb reboot edl` und erstem `edl`-Kommando minimal
-Zeit vergehen lassen. Script macht `edl printgpt` als Erstkontakt sofort nach
-USB-Enumeration.
+→ Mitigation: keep the gap between `adb reboot edl` and the first `edl`
+command minimal. The script issues `edl printgpt` as its first contact
+immediately after USB enumeration.
 
-### USB Power / Kabel / Hub
-Generische Sahara-Probleme bei unsauberer Power-Delivery: Enumeration-Flackern
-bricht den Sahara-Handshake ab.
+### USB power / cables / hubs
+Generic Sahara issues with unclean power delivery: enumeration glitches
+kill the Sahara handshake.
 
-→ Mitigation: Dongle **direkt** am Host anschließen, kein Hub. Kurzes,
-qualitätsgeprüftes Kabel. Bei wackeligen Verbindungen USB-Port wechseln.
+→ Mitigation: plug the dongle **directly** into the host, no hub. Short,
+quality-tested cable. Switch USB port if connection is flaky.
 
-### Hardware-Revisionen
-UZ801 existiert als V1.1, V3.0, V3.2, V3.4.33 mit teils unterschiedlichen
-PBL-Versionen und EDL-Testpunkten. Nicht alle Revisionen verhalten sich gleich.
+### Hardware revisions
+UZ801 ships as V1.1, V3.0, V3.2, V3.4.33 with varying PBL versions and
+EDL testpoints. Not all revisions behave the same.
 
-→ Mitigation: Bei neuen Dongles PCB-Revision prüfen (Aufdruck). Wenn ein
-Dongle wiederholt EDL-Fehler hat obwohl andere funktionieren: wahrscheinlich
-abweichende Hardware-Revision.
+→ Mitigation: on new dongles, check the PCB silkscreen revision. If one
+dongle reproducibly fails EDL while others succeed, it's likely a
+different hardware revision.
 
-### Peek-Loader können eMMC schreiben
-Häufiges Missverständnis: `*_peek.bin` Loader sind keine read-only Variante.
-Der Name bezieht sich auf RAM-peek/poke-Primitiven, nicht auf Storage-Zugriff.
-`edl w partition file` funktioniert mit peek-Loadern.
+### Peek loaders CAN write eMMC
+Common misconception: `*_peek.bin` loaders are **not** a read-only variant.
+The name refers to RAM peek/poke primitives, not storage access.
+`edl w partition file` works fine with peek loaders.
 
-→ Die "Connection detected"-Fehlermeldung beim Schreiben kommt NICHT vom
-Loader-Typ, sondern vom korrupten Sahara-State (siehe oben).
+→ The "Connection detected" error on write is NOT caused by the loader
+type — it's a corrupted Sahara state (see above).
 
-### USB-Overflow beim ersten Write (reproduzierbar auf UZ801)
-**Symptom:** Reads im EDL laufen durch, der **erste Write** crasht mit
-`USBError(75, 'Overflow')` → Firehose geht in Error-State → Abort.
+### USB Overflow on first write (reproducible on UZ801)
+**Symptom:** EDL reads succeed, but the **first write** crashes with
+`USBError(75, 'Overflow')` → Firehose enters error state → abort.
 
-**Reproduziert am 2026-04-17** auf zwei unabhängigen UZ801 (SIM-WIN-00000014,
-SIM-WIN-00000002) mit edlclient 3.62 auf Python 3.13.5.
+**Reproduced on 2026-04-17** on two independent UZ801 units
+(SIM-WIN-00000014, SIM-WIN-00000002) using edlclient 3.62 on Python 3.13.5.
 
-**Zwei Ursachen — beide müssen adressiert werden:**
+**Two causes — both need to be addressed:**
 
-1. **Falscher MaxPayload bei Autodetect:** Wenn `edl` den Memory-Type nicht
-   explizit bekommt, autodetected er bei einigen Firehose-Loadern falsch
-   und verhandelt eine zu große MaxPayload. Siehe
+1. **Wrong MaxPayload on auto-detect:** Without an explicit memory type,
+   `edl` auto-detects incorrectly for some Firehose loaders and negotiates
+   a MaxPayload too large for the device's USB endpoint. See
    [bkerler/edl #103](https://github.com/bkerler/edl/issues/103).
-   → Fix: Bei allen `edl` Aufrufen explizit `--memory=emmc` setzen
-   (außer `reset`, das unterstützt das Flag nicht).
+   → Fix: pass `--memory=emmc` explicitly on every `edl` invocation
+   (except `reset`, which does not accept the flag).
 
-2. **Kumulierter USB-State nach vielen Reads:** Auch mit `--memory=emmc`
-   tritt Overflow auf, wenn vor dem ersten Write viele Read-Kommandos
-   liefen (jedes `edl r` startet eine neue Sahara-Session, lädt Loader
-   neu hoch). Empirisch: ≤10 Reads gehen, ~23 Reads inkl. 64MB modem-Read
-   brechen den State. Der dry-run mit nur 1 Write (ohne Reads vorher) ging
-   auch ohne Fix #2 durch.
-   → Fix: Stock-Partition-Backup (12 edl-r Calls inkl. modem 64MB) ist
-   **standardmäßig deaktiviert** — via `--full-stock-backup` aktivierbar
-   wenn wirklich nötig (zum Restore-Zweck). NV-Backup (5 kleine Reads)
-   bleibt immer an — unverzichtbar für IMEI/RF-Kalibrierung.
+2. **Cumulative USB state after many reads:** Even with `--memory=emmc`,
+   overflow occurs when many read commands ran before the first write
+   (each `edl r` opens a fresh Sahara session and re-uploads the loader).
+   Empirically: ≤10 reads work; ~23 reads including the 64 MB modem read
+   break the state. A dry-run with a single write (no reads first) also
+   succeeded without fix #2.
+   → Fix: the stock-partition backup (12 `edl r` calls including the 64 MB
+   modem partition) is **disabled by default** — enable with
+   `--full-stock-backup` when genuinely needed (full restore scenario).
+   NV backup (5 small reads) is always on — indispensable for IMEI and
+   RF calibration.
 
-→ Script `flash-uz801.sh` und `restore-dongle.sh` setzen das überall.
+→ `flash-uz801.sh` and `restore-dongle.sh` apply both fixes everywhere.
 
-**Validiert 2026-04-17:** SIM-WIN-00000002 mit kombiniertem Fix:
-Flash komplett durchgelaufen, 47/48 Tests PASS, LTE + NetBird funktionieren.
+**Validated 2026-04-17:** SIM-WIN-00000002 with combined fix ran the
+complete flash through, 47/48 tests PASS, LTE + NetBird operational.
+
+### Hardware-specific Firehose loader (overflow despite fixes)
+**Symptom:** Even with `--memory=emmc` set AND few reads beforehand, the
+first write still throws `USBError(75, 'Overflow')` on **some** dongles.
+
+**Reproduced 2026-04-17** on SIM-WIN-00000014: flashing fails on the first
+write with all mitigations above. Same code works on 002/012/013 without
+issue → hardware-specific incompatibility with the default loader.
+
+**Cause:** `edl` auto-selects a Firehose loader (typically `longcheer` for
+MSM8916). Some individual dongles' USB endpoints cannot buffer the payload
+that loader version negotiates. Alternative loaders (e.g.
+`qualcomm/factory/msm8916`) negotiate a smaller payload that works.
+
+**Fix:** `flash-uz801.sh` accepts `--loader <path>` (or `EDL_LOADER` env
+variable) to force a specific loader. For 014-style symptoms, set it to:
+
+```
+~/.local/share/pipx/venvs/edlclient/lib/python3.13/site-packages/edlclient/../Loaders/qualcomm/factory/msm8916/007050e100000000_8ecf3eaa03f772e2_fhprg_peek.bin
+```
+
+**Validated 2026-04-17:** SIM-WIN-00000014 with this loader → full flash
+succeeded, Debian booted in 10s, full rescue from previously-unrecoverable
+state.
+
+### Modem firmware segments missing after EDL-only flash
+**Symptom:** Debian boots, modem DSP runs, but `mmcli -m 0 --enable`
+returns `QMI Protocol Error (52) DeviceNotReady`, signal 0, not registered.
+
+**Cause:** Modem/MBA firmware is loaded by the kernel via
+`request_firmware()` from `/lib/firmware/`. This requires ALL binary
+segments (`.b00`, `.b01`, `.b04`, etc.) in addition to the `.mdt` metadata
+header. Our rootfs ships only the `.mdt` stubs — the `.b00+` segments are
+normally pulled at flash time via ADB from `/firmware/image/` on Stock
+Android, then copied via SCP into `/lib/firmware/` on the booted Debian.
+**In EDL-only flashes (no ADB access) this step is skipped** → `.b00+`
+segments never copied → modem firmware incomplete.
+
+**Affected dongles:** any dongle reaching the flash pipeline from EDL
+without passing through Stock Android — e.g. partially-flashed or bricked
+dongles that fell back to EDL via the PBL (SIM-WIN-00000001,
+SIM-WIN-00000014 after recovery attempts).
+
+**Fix (two-pronged):**
+1. **Repository-bundled reference set:** `flash/files/uz801/modem_firmware/`
+   ships a complete copy of firmware files (186 files, ~50 MB) dumped
+   from a known-good UZ801. Force-added past the `*.bin` .gitignore rule.
+2. **flash-uz801.sh fallback:** when `MODEM_FW_DIR` is empty after Step 2
+   (no ADB backup), the reference set is used automatically when writing
+   the `modem` (vfat) partition.
+3. **provision.sh auto-heal:** after SSH is up, the script checks whether
+   `/lib/firmware/modem.b00` exists on the dongle. If not → copies the
+   reference set via SCP, restarts rmtfs + remoteproc + ModemManager,
+   waits 15 s.
+
+**Validated 2026-04-17:** SIM-WIN-00000014 (EDL-only flashed) went from
+`DeviceNotReady` to `registered, LTE, operator L LUXGSM, signal 65`
+after automatic firmware copy.
+
+### modem-autoconnect stuck in failed state (systemd oneshot)
+**Symptom:** modem registered, good signal, but no data bearer active
+→ no LTE connectivity → red LED on the dongle.
+
+**Cause:** `modem-autoconnect.service` is a systemd **oneshot** service
+that runs `mmcli -m 0 --simple-connect` at boot. If modem firmware is not
+yet ready at boot time, the connect fails and systemd marks the service
+as `failed`. Oneshot services are **not automatically retried**.
+
+**Fix in provision.sh:** after the firmware-heal step, check the service
+state; if failed (or if we just healed firmware this session):
+`systemctl reset-failed modem-autoconnect` followed by
+`systemctl restart modem-autoconnect`. The service then brings up the
+bearer successfully.
+
+**Long-term fix (TODO):** convert the service to `type=simple` with
+`Restart=on-failure` so systemd retries automatically until the modem
+is ready.
 
 ### lk2nd unterstützt kein `fastboot flash partition`
 Obwohl der Dongle nach dem Flash als Fastboot (`18d1:d00d`) erscheint,
