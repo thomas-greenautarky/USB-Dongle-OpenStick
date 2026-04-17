@@ -1,0 +1,15 @@
+[Unit]
+Description=Status LEDs (best-effort across dongle variants)
+# LED names are DTB-specific (UZ801 has blue:wan + green:wlan + red:power,
+# other MSM8916 dongles may differ). This service iterates over whatever
+# /sys/class/leds/ offers and picks sensible triggers, silently skipping
+# any LED that isn't present.
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/led-status.sh
+
+[Install]
+WantedBy=multi-user.target
