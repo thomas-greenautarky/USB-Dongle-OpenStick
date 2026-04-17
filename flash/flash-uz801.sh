@@ -48,11 +48,18 @@ BACKUP_BASE="$SCRIPT_DIR/../backup"
 # on the first write. See docs/dongle-compatibility.md § USB-Overflow.
 EDL_OPTS=(--memory=emmc)
 
-# Explicit Firehose loader override — defaults to edl's auto-detect which picks
-# the longcheer loader. Some dongles (e.g. SIM-WIN-00000014) have USB
-# endpoints that only work with a specific loader — set EDL_LOADER via flag
-# or environment to force one.
-EDL_LOADER="${EDL_LOADER:-}"
+# Firehose loader selection — default to the Qualcomm factory MSM8916 loader
+# which has proven to work across more UZ801 hardware revisions than edl's
+# auto-picked longcheer loader. longcheer overflows the USB endpoint on some
+# dongles (SIM-WIN-00000014). Override with --loader or EDL_LOADER if a
+# future variant needs a different one.
+if [ -z "${EDL_LOADER:-}" ]; then
+    _edl_loader_dir="$HOME/.local/share/pipx/venvs/edlclient/lib/python3.13/site-packages/edlclient/../Loaders/qualcomm/factory/msm8916"
+    _default_loader="$_edl_loader_dir/007050e100000000_8ecf3eaa03f772e2_fhprg_peek.bin"
+    if [ -f "$_default_loader" ]; then
+        EDL_LOADER="$_default_loader"
+    fi
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -84,10 +91,24 @@ wait_for_edl() {
 
 require_replug() {
     warn "Sahara/EDL error detected — PBL needs power cycle."
-    warn "Unplug the dongle, wait 3 seconds, then plug it back in."
-    echo -ne "${YELLOW}[!]${NC} Press Enter when dongle is back in EDL..."
-    read -r
-    wait_for_edl 30 || err "EDL device not detected after replug."
+    warn "Unplug the dongle, wait 3 seconds, then plug it back in (auto-detected)."
+    # Wait for USB disconnect first — up to 60s
+    local disconnected=false
+    for i in $(seq 1 60); do
+        if ! lsusb 2>/dev/null | grep -qE "05c6:9008|05c6:90b6|05c6:f00e|18d1:d00d|1d6b:0104"; then
+            disconnected=true
+            break
+        fi
+        sleep 1
+    done
+    if ! $disconnected; then
+        warn "Dongle still connected after 60s — cannot auto-detect replug."
+        echo -ne "${YELLOW}[!]${NC} Press Enter when dongle is back in EDL..."
+        read -r
+    else
+        log "  Dongle disconnected — waiting for replug..."
+    fi
+    wait_for_edl 60 || err "EDL device not detected after replug."
     log "EDL device back online."
 }
 
