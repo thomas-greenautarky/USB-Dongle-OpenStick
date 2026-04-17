@@ -95,7 +95,7 @@ else
 fi
 
 log "Resetting device..."
-edl "${EDL_OPTS[@]}" reset 2>&1 | tail -1 || true
+edl reset 2>&1 | tail -1 || true
 
 echo ""
 log "Restore complete. Unplug and re-plug the dongle to boot."

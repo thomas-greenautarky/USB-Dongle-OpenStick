@@ -475,7 +475,7 @@ rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
 # ─── Step 4: Reset and verify ──────────────────────────────────────────────
 
 log "=== Step 4: Boot ==="
-edl "${EDL_OPTS[@]}" reset 2>&1 | tail -1 || true
+edl reset 2>&1 | tail -1 || true
 
 log "Waiting for device to boot (90s)..."
 BOOTED=false
