@@ -497,6 +497,14 @@ edl_run "rootfs" w rootfs "$ROOTFS_FILE"
 
 # Create and flash modem vfat partition
 MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
+# Fall back to reference firmware if no ADB backup was made (EDL-only flash)
+if [ ! -d "$MODEM_FW_DIR" ] || [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -eq 0 ]; then
+    REFERENCE_FW="$FILES_DIR/modem_firmware"
+    if [ -d "$REFERENCE_FW" ] && [ "$(ls "$REFERENCE_FW" 2>/dev/null | wc -l)" -gt 0 ]; then
+        warn "  No ADB modem backup — using reference firmware from $REFERENCE_FW"
+        MODEM_FW_DIR="$REFERENCE_FW"
+    fi
+fi
 if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
     log "  Modem firmware partition ($(ls "$MODEM_FW_DIR" | wc -l) files)..."
     MODEM_VFAT=$(mktemp)
