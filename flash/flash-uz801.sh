@@ -106,12 +106,16 @@ edl_run() {
 # ─── Parse arguments ────────────────────────────────────────────────────────
 
 SKIP_BACKUP=false
+SKIP_STOCK_BACKUP=true  # Default: skip the 12-partition stock backup (64MB modem read
+                        # corrupts USB state before first write — see docs).
+                        # NV backup (5 small reads) is always done unless --skip-backup.
 RESTORE_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --skip-backup)  SKIP_BACKUP=true; shift ;;
-        --restore)      RESTORE_DIR="$2"; shift 2 ;;
+        --skip-backup)        SKIP_BACKUP=true; shift ;;
+        --full-stock-backup)  SKIP_STOCK_BACKUP=false; shift ;;
+        --restore)            RESTORE_DIR="$2"; shift 2 ;;
         *) err "Unknown option: $1" ;;
     esac
 done
@@ -347,21 +351,27 @@ if ! $SKIP_BACKUP; then
         [ "$CONTINUE" = "y" ] || [ "$CONTINUE" = "Y" ] || err "Aborted."
     fi
 
-    # Stock partition backup
-    log "--- Stock partition backup ---"
-    STOCK_DIR="$BACKUP_DIR/stock_partitions"
-    mkdir -p "$STOCK_DIR"
-    edl "${EDL_OPTS[@]}" rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt ✓" || true
-    STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem"
-    for part in $STOCK_PARTS; do
-        echo -n "    $part... "
-        if edl "${EDL_OPTS[@]}" r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
-            echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
-        else
-            echo "skip"
-            rm -f "$STOCK_DIR/${part}.bin"
-        fi
-    done
+    # Stock partition backup (optional — disabled by default, see note above)
+    if ! $SKIP_STOCK_BACKUP; then
+        log "--- Stock partition backup ---"
+        STOCK_DIR="$BACKUP_DIR/stock_partitions"
+        mkdir -p "$STOCK_DIR"
+        edl "${EDL_OPTS[@]}" rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt ✓" || true
+        STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem"
+        for part in $STOCK_PARTS; do
+            echo -n "    $part... "
+            if edl "${EDL_OPTS[@]}" r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+                echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
+            else
+                echo "skip"
+                rm -f "$STOCK_DIR/${part}.bin"
+            fi
+        done
+    else
+        log "--- Stock partition backup skipped (--full-stock-backup to enable) ---"
+        log "    Reason: 64MB modem read corrupts USB state before first write."
+        log "    NV backup is still done. Boot chain files come from FILES_DIR."
+    fi
 fi
 
 # ─── Step 3c: Generate GPT ─────────────────────────────────────────────────

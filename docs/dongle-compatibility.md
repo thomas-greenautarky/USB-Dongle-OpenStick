@@ -200,15 +200,30 @@ Loader-Typ, sondern vom korrupten Sahara-State (siehe oben).
 **Reproduziert am 2026-04-17** auf zwei unabhängigen UZ801 (SIM-WIN-00000014,
 SIM-WIN-00000002) mit edlclient 3.62 auf Python 3.13.5.
 
-**Ursache:** Wenn `edl` den Memory-Type nicht explizit bekommt, autodetected
-er bei einigen Firehose-Loadern falsch und verhandelt eine zu große
-MaxPayload — der USB-Endpoint des UZ801-PBL kann die Menge nicht puffern
-und wirft Overflow. Siehe [bkerler/edl #103](https://github.com/bkerler/edl/issues/103).
+**Zwei Ursachen — beide müssen adressiert werden:**
 
-**Fix:** Bei allen `edl` Aufrufen explizit `--memory=emmc` setzen.
-Das erzwingt die richtige Firehose-Config für MSM8916 eMMC.
+1. **Falscher MaxPayload bei Autodetect:** Wenn `edl` den Memory-Type nicht
+   explizit bekommt, autodetected er bei einigen Firehose-Loadern falsch
+   und verhandelt eine zu große MaxPayload. Siehe
+   [bkerler/edl #103](https://github.com/bkerler/edl/issues/103).
+   → Fix: Bei allen `edl` Aufrufen explizit `--memory=emmc` setzen
+   (außer `reset`, das unterstützt das Flag nicht).
+
+2. **Kumulierter USB-State nach vielen Reads:** Auch mit `--memory=emmc`
+   tritt Overflow auf, wenn vor dem ersten Write viele Read-Kommandos
+   liefen (jedes `edl r` startet eine neue Sahara-Session, lädt Loader
+   neu hoch). Empirisch: ≤10 Reads gehen, ~23 Reads inkl. 64MB modem-Read
+   brechen den State. Der dry-run mit nur 1 Write (ohne Reads vorher) ging
+   auch ohne Fix #2 durch.
+   → Fix: Stock-Partition-Backup (12 edl-r Calls inkl. modem 64MB) ist
+   **standardmäßig deaktiviert** — via `--full-stock-backup` aktivierbar
+   wenn wirklich nötig (zum Restore-Zweck). NV-Backup (5 kleine Reads)
+   bleibt immer an — unverzichtbar für IMEI/RF-Kalibrierung.
 
 → Script `flash-uz801.sh` und `restore-dongle.sh` setzen das überall.
+
+**Validiert 2026-04-17:** SIM-WIN-00000002 mit kombiniertem Fix:
+Flash komplett durchgelaufen, 47/48 Tests PASS, LTE + NetBird funktionieren.
 
 ### lk2nd unterstützt kein `fastboot flash partition`
 Obwohl der Dongle nach dem Flash als Fastboot (`18d1:d00d`) erscheint,
