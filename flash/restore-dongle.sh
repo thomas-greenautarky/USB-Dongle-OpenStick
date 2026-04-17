@@ -11,7 +11,7 @@
 #
 # Prerequisites:
 #   - Dongle in EDL mode (hold reset button + plug in USB)
-#   - edl tool installed: pipx install edlclient
+#   - edl tool installed: pipx install git+https://github.com/bkerler/edl.git
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

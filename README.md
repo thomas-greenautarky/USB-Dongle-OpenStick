@@ -46,7 +46,7 @@ See also:
 
 ```bash
 # Install tools
-pipx install edlclient     # Qualcomm EDL flash tool
+pipx install git+https://github.com/bkerler/edl.git     # Qualcomm EDL flash tool
 sudo apt install android-sdk-libsparse-utils gdisk mtools  # simg2img, sgdisk, mkfs.vfat
 
 # UZ801 variant — works from Stock Android or EDL:

@@ -25,7 +25,7 @@
 #   - JZ0145-v33 (EDL only 05c6:9008) — use flash-openstick.sh instead
 #
 # Prerequisites:
-#   - edl: pipx install edlclient
+#   - edl: pipx install git+https://github.com/bkerler/edl.git
 #   - adb: apt install adb
 #   - sgdisk: apt install gdisk
 #   - mtools: apt install mtools (for modem vfat partition)
@@ -201,7 +201,7 @@ for f in "${REQUIRED_FILES[@]}"; do
 done
 log "All files present. Rootfs: $ROOTFS_FILE"
 
-which edl >/dev/null 2>&1    || err "edl not found. Install: pipx install edlclient"
+which edl >/dev/null 2>&1    || err "edl not found. Install: pipx install git+https://github.com/bkerler/edl.git"
 which adb >/dev/null 2>&1    || warn "adb not found (needed for Stock Android dongles)"
 which sgdisk >/dev/null 2>&1 || err "sgdisk not found. Install: apt install gdisk"
 

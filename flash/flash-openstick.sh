@@ -3,7 +3,7 @@
 # flash-openstick.sh — Flash OpenStick Debian onto a JZ0145-v33 UFI 4G USB dongle
 #
 # Prerequisites:
-#   - edl tool installed: pipx install edlclient
+#   - edl tool installed: pipx install git+https://github.com/bkerler/edl.git
 #   - sgdisk installed: apt install gdisk (for GPT generation)
 #   - adb installed: apt install adb (optional, for entering EDL from stock Android)
 #   - Device in EDL mode (reset button + USB plug, or adb reboot edl)
@@ -77,7 +77,7 @@ for f in "${REQUIRED_FILES[@]}"; do
 done
 log "All flash files present."
 
-which edl >/dev/null 2>&1   || err "edl not found. Install: pipx install edlclient"
+which edl >/dev/null 2>&1   || err "edl not found. Install: pipx install git+https://github.com/bkerler/edl.git"
 which adb >/dev/null 2>&1   || warn "adb not found (optional, for entering EDL from stock Android)"
 
 # ─── Step 1: Enter EDL mode ─────────────────────────────────────────────────

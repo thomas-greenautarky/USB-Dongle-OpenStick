@@ -39,7 +39,7 @@ as raw sector data via EDL, bypassing the aboot/fastboot layer entirely.
 
 ```bash
 # EDL tool
-pipx install edlclient
+pipx install git+https://github.com/bkerler/edl.git
 
 # Android tools (ADB for post-flash configuration only)
 sudo apt install adb

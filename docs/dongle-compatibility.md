@@ -379,7 +379,7 @@ GPT is generated dynamically — any eMMC size works.
 
 | Tool | Install | Required for |
 |------|---------|-------------|
-| `edl` | `pipx install edlclient` | EDL flash protocol |
+| `edl` | `pipx install git+https://github.com/bkerler/edl.git` | EDL flash protocol |
 | `adb` | `apt install adb` | UZ801 ADB reboot to EDL |
 | `sgdisk` | `apt install gdisk` | Dynamic GPT generation |
 | `sshpass` | `apt install sshpass` | SSH automation |
