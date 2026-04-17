@@ -53,12 +53,19 @@ EDL_OPTS=(--memory=emmc)
 # auto-picked longcheer loader. longcheer overflows the USB endpoint on some
 # dongles (SIM-WIN-00000014). Override with --loader or EDL_LOADER if a
 # future variant needs a different one.
+#
+# The loader ships inside the edlclient pipx virtualenv. Python minor versions
+# differ across systems (e.g. 3.11 on Raspberry Pi OS, 3.13 elsewhere), so we
+# search by glob rather than hardcoding the path.
 if [ -z "${EDL_LOADER:-}" ]; then
-    _edl_loader_dir="$HOME/.local/share/pipx/venvs/edlclient/lib/python3.13/site-packages/edlclient/../Loaders/qualcomm/factory/msm8916"
-    _default_loader="$_edl_loader_dir/007050e100000000_8ecf3eaa03f772e2_fhprg_peek.bin"
-    if [ -f "$_default_loader" ]; then
-        EDL_LOADER="$_default_loader"
-    fi
+    for _candidate in \
+        "$HOME"/.local/share/pipx/venvs/edlclient/lib/python*/site-packages/edlclient/../Loaders/qualcomm/factory/msm8916/007050e100000000_8ecf3eaa03f772e2_fhprg_peek.bin \
+        "$HOME"/.local/share/pipx/venvs/edlclient/lib/python*/site-packages/Loaders/qualcomm/factory/msm8916/007050e100000000_8ecf3eaa03f772e2_fhprg_peek.bin; do
+        if [ -f "$_candidate" ]; then
+            EDL_LOADER="$_candidate"
+            break
+        fi
+    done
 fi
 
 RED='\033[0;31m'
