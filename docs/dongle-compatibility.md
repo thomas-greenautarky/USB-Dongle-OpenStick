@@ -193,6 +193,23 @@ Der Name bezieht sich auf RAM-peek/poke-Primitiven, nicht auf Storage-Zugriff.
 → Die "Connection detected"-Fehlermeldung beim Schreiben kommt NICHT vom
 Loader-Typ, sondern vom korrupten Sahara-State (siehe oben).
 
+### USB-Overflow beim ersten Write (reproduzierbar auf UZ801)
+**Symptom:** Reads im EDL laufen durch, der **erste Write** crasht mit
+`USBError(75, 'Overflow')` → Firehose geht in Error-State → Abort.
+
+**Reproduziert am 2026-04-17** auf zwei unabhängigen UZ801 (SIM-WIN-00000014,
+SIM-WIN-00000002) mit edlclient 3.62 auf Python 3.13.5.
+
+**Ursache:** Wenn `edl` den Memory-Type nicht explizit bekommt, autodetected
+er bei einigen Firehose-Loadern falsch und verhandelt eine zu große
+MaxPayload — der USB-Endpoint des UZ801-PBL kann die Menge nicht puffern
+und wirft Overflow. Siehe [bkerler/edl #103](https://github.com/bkerler/edl/issues/103).
+
+**Fix:** Bei allen `edl` Aufrufen explizit `--memory=emmc` setzen.
+Das erzwingt die richtige Firehose-Config für MSM8916 eMMC.
+
+→ Script `flash-uz801.sh` und `restore-dongle.sh` setzen das überall.
+
 ### lk2nd unterstützt kein `fastboot flash partition`
 Obwohl der Dongle nach dem Flash als Fastboot (`18d1:d00d`) erscheint,
 implementiert lk2nd **kein GPT-flashing**. Ein `fastboot flash rootfs`

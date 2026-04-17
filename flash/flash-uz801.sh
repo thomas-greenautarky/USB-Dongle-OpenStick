@@ -44,6 +44,10 @@ FILES_DIR="$SCRIPT_DIR/files/uz801"
 LOG_DIR="$SCRIPT_DIR/../logs"
 BACKUP_BASE="$SCRIPT_DIR/../backup"
 
+# UZ801 Firehose quirk: must explicitly set memory=emmc to avoid USB Overflow
+# on the first write. See docs/dongle-compatibility.md § USB-Overflow.
+EDL_OPTS=(--memory=emmc)
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -81,16 +85,16 @@ require_replug() {
     log "EDL device back online."
 }
 
-# edl_run <label> <edl args...> — run edl, retry once with replug on Sahara error
+# edl_run <label> <edl args...> — run edl with EDL_OPTS, retry once with replug on Sahara error
 edl_run() {
     local label="$1"; shift
     local out
-    out=$(edl "$@" 2>&1) || true
+    out=$(edl "${EDL_OPTS[@]}" "$@" 2>&1) || true
     if is_sahara_error "$out"; then
         warn "$label: Sahara error"
         echo "$out" | tail -3
         require_replug
-        out=$(edl "$@" 2>&1) || true
+        out=$(edl "${EDL_OPTS[@]}" "$@" 2>&1) || true
         if is_sahara_error "$out"; then
             echo "$out" | tail -3
             err "$label: Sahara error persists after replug. Abort."
@@ -293,7 +297,7 @@ log "EDL device detected."
 # ─── Step 3a: Read disk geometry ───────────────────────────────────────────
 
 log "--- Reading disk geometry ---"
-DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
+DISK_INFO=$(timeout 15 edl "${EDL_OPTS[@]}" printgpt 2>&1 | grep -i "Total disk size" || true)
 TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
 if [ -n "$TOTAL_SECTORS" ]; then
     TOTAL_SECTORS_DEC=$((16#$TOTAL_SECTORS))
@@ -319,9 +323,9 @@ if ! $SKIP_BACKUP; then
     for part in $NV_PARTS; do
         NV_TOTAL=$((NV_TOTAL + 1))
         log "  Reading $part..."
-        if edl r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+        if edl "${EDL_OPTS[@]}" r "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
             SIZE=$(du -h "$BACKUP_DIR/${part}.bin" | cut -f1)
-            edl r "$part" "$BACKUP_DIR/${part}.verify" 2>&1 >/dev/null
+            edl "${EDL_OPTS[@]}" r "$part" "$BACKUP_DIR/${part}.verify" 2>&1 >/dev/null
             if [ -f "$BACKUP_DIR/${part}.verify" ] && cmp -s "$BACKUP_DIR/${part}.bin" "$BACKUP_DIR/${part}.verify"; then
                 log "    $part: $SIZE ✓"
                 NV_OK=$((NV_OK + 1))
@@ -347,11 +351,11 @@ if ! $SKIP_BACKUP; then
     log "--- Stock partition backup ---"
     STOCK_DIR="$BACKUP_DIR/stock_partitions"
     mkdir -p "$STOCK_DIR"
-    edl rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt ✓" || true
+    edl "${EDL_OPTS[@]}" rs 0 40 "$STOCK_DIR/gpt.bin" 2>&1 >/dev/null && log "    gpt ✓" || true
     STOCK_PARTS="sbl1 sbl1bak aboot abootbak rpm rpmbak tz tzbak hyp hypbak pad modem"
     for part in $STOCK_PARTS; do
         echo -n "    $part... "
-        if edl r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
+        if edl "${EDL_OPTS[@]}" r "$part" "$STOCK_DIR/${part}.bin" 2>&1 | grep -q "Read \|Dumped"; then
             echo "$(du -h "$STOCK_DIR/${part}.bin" | cut -f1) ✓"
         else
             echo "skip"
@@ -471,7 +475,7 @@ rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
 # ─── Step 4: Reset and verify ──────────────────────────────────────────────
 
 log "=== Step 4: Boot ==="
-edl reset 2>&1 | tail -1 || true
+edl "${EDL_OPTS[@]}" reset 2>&1 | tail -1 || true
 
 log "Waiting for device to boot (90s)..."
 BOOTED=false

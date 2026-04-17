@@ -28,6 +28,10 @@ BACKUP_DIR="${1:-}"
 [ -n "$BACKUP_DIR" ] || err "Usage: bash restore-dongle.sh <backup-dir>"
 [ -d "$BACKUP_DIR" ] || err "Backup directory not found: $BACKUP_DIR"
 
+# UZ801 Firehose quirk: must explicitly set memory=emmc to avoid USB Overflow.
+# See docs/dongle-compatibility.md § USB-Overflow.
+EDL_OPTS=(--memory=emmc)
+
 # All partitions that can be restored
 ALL_PARTITIONS=(sbl1 rpm tz hyp cdt aboot boot rootfs sec fsc fsg modemst1 modemst2)
 
@@ -77,7 +81,7 @@ FAILED=0
 for part in "${ALL_PARTITIONS[@]}"; do
     if [ -f "$BACKUP_DIR/${part}.bin" ]; then
         log "  Writing $part..."
-        if ! edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1; then
+        if ! edl "${EDL_OPTS[@]}" w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1; then
             warn "  Failed to write $part"
             FAILED=$((FAILED + 1))
         fi
@@ -91,7 +95,7 @@ else
 fi
 
 log "Resetting device..."
-edl reset 2>&1 | tail -1 || true
+edl "${EDL_OPTS[@]}" reset 2>&1 | tail -1 || true
 
 echo ""
 log "Restore complete. Unplug and re-plug the dongle to boot."
