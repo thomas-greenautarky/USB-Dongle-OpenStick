@@ -48,6 +48,12 @@ BACKUP_BASE="$SCRIPT_DIR/../backup"
 # on the first write. See docs/dongle-compatibility.md § USB-Overflow.
 EDL_OPTS=(--memory=emmc)
 
+# Explicit Firehose loader override — defaults to edl's auto-detect which picks
+# the longcheer loader. Some dongles (e.g. SIM-WIN-00000014) have USB
+# endpoints that only work with a specific loader — set EDL_LOADER via flag
+# or environment to force one.
+EDL_LOADER="${EDL_LOADER:-}"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -120,9 +126,17 @@ while [[ $# -gt 0 ]]; do
         --restore)            RESTORE_DIR="$2"; shift 2 ;;
         --probe-only)         PROBE_ONLY=true; shift ;;
         --probe-file)         PROBE_FILE="$2"; shift 2 ;;
+        --loader)             EDL_LOADER="$2"; shift 2 ;;
         *) err "Unknown option: $1" ;;
     esac
 done
+
+# If loader override is active, add it to EDL_OPTS
+if [ -n "$EDL_LOADER" ]; then
+    [ -f "$EDL_LOADER" ] || err "Loader not found: $EDL_LOADER"
+    EDL_OPTS+=(--loader="$EDL_LOADER")
+    echo -e "${GREEN}[+]${NC} Using explicit Firehose loader: $(basename "$EDL_LOADER")"
+fi
 
 # ─── Restore mode ───────────────────────────────────────────────────────────
 

@@ -64,6 +64,11 @@ log()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
+# MSM8916 Firehose quirk: without --memory=emmc, the auto-detect negotiates
+# a too-large MaxPayload → USB Overflow on first write.
+# See docs/dongle-compatibility.md § USB-Overflow.
+EDL_OPTS=(--memory=emmc)
+
 # ─── Preflight checks ───────────────────────────────────────────────────────
 
 log "Checking required flash files..."
@@ -163,7 +168,7 @@ log "Logging to: $LOGFILE"
 # ─── Step 1b: Identify dongle hardware ─────────────────────────────────────
 
 log "Identifying dongle hardware..."
-EDL_INFO=$(timeout 15 edl printgpt 2>&1 || true)
+EDL_INFO=$(timeout 15 edl "${EDL_OPTS[@]}" printgpt 2>&1 || true)
 echo "$EDL_INFO" >> "$LOGFILE"
 
 # Check platform via chipset ID in edl output
@@ -181,7 +186,7 @@ else
 fi
 
 # Read and log partition table
-PARTITION_LIST=$(edl printgpt 2>&1 | grep -E "^Part|Name" || true)
+PARTITION_LIST=$(edl "${EDL_OPTS[@]}" printgpt 2>&1 | grep -E "^Part|Name" || true)
 if [ -n "$PARTITION_LIST" ]; then
     log "  Partition table:"
     echo "$PARTITION_LIST" | while read -r line; do log "    $line"; done
@@ -199,7 +204,7 @@ log "Reading modem calibration from device (IMEI, RF cal)..."
 BACKUP_OK=true
 for part in "${MODEM_PARTITIONS[@]}"; do
     log "  Reading $part..."
-    if edl r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
+    if edl "${EDL_OPTS[@]}" r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
         log "  Saved $part ($(du -h "$AUTOSAVE_DIR/${part}.bin" | cut -f1))"
     else
         warn "  Failed to read $part from device"
@@ -246,7 +251,7 @@ fi
 
 # Also backup the original GPT (first 34 sectors)
 log "  Reading original GPT..."
-if edl rs 0 34 "$AUTOSAVE_DIR/gpt_primary.bin" 2>&1 | grep -q "Dumped"; then
+if edl "${EDL_OPTS[@]}" rs 0 34 "$AUTOSAVE_DIR/gpt_primary.bin" 2>&1 | grep -q "Dumped"; then
     log "  Saved GPT ($(du -h "$AUTOSAVE_DIR/gpt_primary.bin" | cut -f1))"
 else
     warn "  Failed to read GPT"
@@ -259,7 +264,7 @@ for part in "${BOOT_PARTITIONS[@]}"; do
         log "  $part already saved"
     else
         log "  Reading $part..."
-        if edl r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
+        if edl "${EDL_OPTS[@]}" r "$part" "$AUTOSAVE_DIR/${part}.bin" 2>&1 | grep -q "Read "; then
             log "  Saved $part ($(du -h "$AUTOSAVE_DIR/${part}.bin" | cut -f1))"
         else
             warn "  Failed to read $part"
@@ -292,7 +297,7 @@ echo ""
 # by eMMC size (3.73 GB vs 3.81 GB etc.), so we cannot hardcode it.
 log "Reading disk size..."
 # Use timeout to prevent bootloop from hanging the script indefinitely
-DISK_INFO=$(timeout 15 edl printgpt 2>&1 | grep -i "Total disk size" || true)
+DISK_INFO=$(timeout 15 edl "${EDL_OPTS[@]}" printgpt 2>&1 | grep -i "Total disk size" || true)
 TOTAL_SECTORS=$(echo "$DISK_INFO" | grep -oP 'sectors:0x\K[0-9a-fA-F]+' | head -1)
 
 if [ -n "$TOTAL_SECTORS" ]; then
@@ -361,37 +366,37 @@ dd if="$GPT_IMG" of="$GPT_IMG.primary" bs=512 count=34 2>/dev/null
 dd if="$GPT_IMG" of="$GPT_IMG.backup" bs=512 skip=$((TOTAL_SECTORS_DEC - 33)) count=33 2>/dev/null
 
 log "Writing primary GPT (sector 0)..."
-edl ws 0 "$GPT_IMG.primary"
+edl "${EDL_OPTS[@]}" ws 0 "$GPT_IMG.primary"
 
 log "Writing backup GPT (sector $BACKUP_GPT_SECTOR)..."
-edl ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup"
+edl "${EDL_OPTS[@]}" ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup"
 
 rm -f "$GPT_IMG" "$GPT_IMG.primary" "$GPT_IMG.backup"
 
 # ─── Step 4: Flash Dragonboard firmware via EDL ─────────────────────────────
 
 log "Flashing Dragonboard firmware..."
-edl w sbl1  "$FILES_DIR/sbl1.mbn"
-edl w rpm   "$FILES_DIR/rpm.mbn"
-edl w tz    "$FILES_DIR/tz.mbn"
-edl w hyp   "$FILES_DIR/qhypstub-test-signed.mbn"
-edl w cdt   "$FILES_DIR/sbc_1.0_8016.bin"
-edl w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
+edl "${EDL_OPTS[@]}" w sbl1  "$FILES_DIR/sbl1.mbn"
+edl "${EDL_OPTS[@]}" w rpm   "$FILES_DIR/rpm.mbn"
+edl "${EDL_OPTS[@]}" w tz    "$FILES_DIR/tz.mbn"
+edl "${EDL_OPTS[@]}" w hyp   "$FILES_DIR/qhypstub-test-signed.mbn"
+edl "${EDL_OPTS[@]}" w cdt   "$FILES_DIR/sbc_1.0_8016.bin"
+edl "${EDL_OPTS[@]}" w aboot "$FILES_DIR/emmc_appsboot-test-signed.mbn"
 
 # ─── Step 5: Flash boot image + rootfs via EDL ──────────────────────────────
 
 log "Flashing boot image (6.6 kernel + appended DTB)..."
-edl w boot "$FILES_DIR/boot.img"
+edl "${EDL_OPTS[@]}" w boot "$FILES_DIR/boot.img"
 
 log "Flashing Debian rootfs (this takes 2-5 minutes)..."
-edl w rootfs "$FILES_DIR/rootfs.raw"
+edl "${EDL_OPTS[@]}" w rootfs "$FILES_DIR/rootfs.raw"
 
 # ─── Step 6: Restore modem calibration data via EDL ─────────────────────────
 
 log "Restoring modem calibration from: $RESTORE_DIR"
 for part in "${MODEM_PARTITIONS[@]}"; do
     log "  Writing $part..."
-    edl w "$part" "$RESTORE_DIR/${part}.bin"
+    edl "${EDL_OPTS[@]}" w "$part" "$RESTORE_DIR/${part}.bin"
 done
 log "Modem calibration restored."
 
