@@ -53,6 +53,52 @@ log()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
+# ─── Sahara error recovery ──────────────────────────────────────────────────
+# Sahara has only one Hello packet — any failure leaves PBL in error state
+# that survives until a full power cycle. Detect these errors, prompt for
+# unplug/replug, and retry the command once.
+# See docs/dongle-compatibility.md § EDL Instabilität for details.
+
+is_sahara_error() {
+    echo "$1" | grep -qiE "connection (already|detected)|sahara.*(timeout|fail|error)|no response|device.*not.*(found|detected)"
+}
+
+wait_for_edl() {
+    local timeout=${1:-30}
+    for i in $(seq 1 "$timeout"); do
+        lsusb 2>/dev/null | grep -q "05c6:9008" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+require_replug() {
+    warn "Sahara/EDL error detected — PBL needs power cycle."
+    warn "Unplug the dongle, wait 3 seconds, then plug it back in."
+    echo -ne "${YELLOW}[!]${NC} Press Enter when dongle is back in EDL..."
+    read -r
+    wait_for_edl 30 || err "EDL device not detected after replug."
+    log "EDL device back online."
+}
+
+# edl_run <label> <edl args...> — run edl, retry once with replug on Sahara error
+edl_run() {
+    local label="$1"; shift
+    local out
+    out=$(edl "$@" 2>&1) || true
+    if is_sahara_error "$out"; then
+        warn "$label: Sahara error"
+        echo "$out" | tail -3
+        require_replug
+        out=$(edl "$@" 2>&1) || true
+        if is_sahara_error "$out"; then
+            echo "$out" | tail -3
+            err "$label: Sahara error persists after replug. Abort."
+        fi
+    fi
+    echo "$out" | tail -1
+}
+
 # ─── Parse arguments ────────────────────────────────────────────────────────
 
 SKIP_BACKUP=false
@@ -104,6 +150,10 @@ log "All files present. Rootfs: $ROOTFS_FILE"
 which edl >/dev/null 2>&1    || err "edl not found. Install: pipx install edlclient"
 which adb >/dev/null 2>&1    || warn "adb not found (needed for Stock Android dongles)"
 which sgdisk >/dev/null 2>&1 || err "sgdisk not found. Install: apt install gdisk"
+
+# EDL stability: connect dongle directly to host, not through a USB hub.
+# See docs/dongle-compatibility.md § EDL Instabilität.
+warn "EDL tip: plug dongle directly into the host (avoid USB hubs) for stable Sahara."
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -364,26 +414,26 @@ dd if="$GPT_IMG" of="$GPT_IMG.backup" bs=512 skip=$((TOTAL_SECTORS_DEC - 33)) co
 log "--- Flash via EDL ---"
 
 log "  Primary GPT..."
-edl ws 0 "$GPT_IMG.primary" 2>&1 | tail -1
+edl_run "gpt-primary" ws 0 "$GPT_IMG.primary"
 
 log "  Backup GPT..."
-edl ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup" 2>&1 | tail -1
+edl_run "gpt-backup" ws "$BACKUP_GPT_SECTOR" "$GPT_IMG.backup"
 
 log "  Firmware (sbl1, rpm, tz, hyp, cdt)..."
-edl w sbl1  "$FILES_DIR/sbl1.mbn"  2>&1 | tail -1
-edl w rpm   "$FILES_DIR/rpm.mbn"   2>&1 | tail -1
-edl w tz    "$FILES_DIR/tz.mbn"    2>&1 | tail -1
-edl w hyp   "$FILES_DIR/hyp.mbn"   2>&1 | tail -1
-[ -f "$FILES_DIR/sbc_1.0_8016.bin" ] && edl w cdt "$FILES_DIR/sbc_1.0_8016.bin" 2>&1 | tail -1
+edl_run "sbl1" w sbl1 "$FILES_DIR/sbl1.mbn"
+edl_run "rpm"  w rpm  "$FILES_DIR/rpm.mbn"
+edl_run "tz"   w tz   "$FILES_DIR/tz.mbn"
+edl_run "hyp"  w hyp  "$FILES_DIR/hyp.mbn"
+[ -f "$FILES_DIR/sbc_1.0_8016.bin" ] && edl_run "cdt" w cdt "$FILES_DIR/sbc_1.0_8016.bin"
 
 log "  Bootloader (lk2nd as aboot)..."
-edl w aboot "$FILES_DIR/aboot.mbn" 2>&1 | tail -1
+edl_run "aboot" w aboot "$FILES_DIR/aboot.mbn"
 
 log "  Boot partition (kernel + DTBs)..."
-edl w boot "$FILES_DIR/boot.bin" 2>&1 | tail -1
+edl_run "boot" w boot "$FILES_DIR/boot.bin"
 
 log "  Rootfs (this takes 2-5 minutes)..."
-edl w rootfs "$ROOTFS_FILE" 2>&1 | tail -1
+edl_run "rootfs" w rootfs "$ROOTFS_FILE"
 
 # Create and flash modem vfat partition
 MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
@@ -401,7 +451,7 @@ if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0
             mount -o loop /tmp/vfat.img /mnt && mkdir -p /mnt/image &&
             cp /fw/* /mnt/image/ && umount /mnt" 2>/dev/null
     fi
-    edl w modem "$MODEM_VFAT" 2>&1 | tail -1
+    edl_run "modem" w modem "$MODEM_VFAT"
     rm -f "$MODEM_VFAT"
 fi
 
@@ -409,7 +459,7 @@ fi
 if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/modemst1.bin" ] && [ "$(stat -c%s "$BACKUP_DIR/modemst1.bin")" -gt 1024 ]; then
     log "  Restoring NV storage..."
     for part in sec fsc fsg modemst1 modemst2; do
-        [ -f "$BACKUP_DIR/${part}.bin" ] && edl w "$part" "$BACKUP_DIR/${part}.bin" 2>&1 | tail -1
+        [ -f "$BACKUP_DIR/${part}.bin" ] && edl_run "nv-$part" w "$part" "$BACKUP_DIR/${part}.bin"
     done
     log "  NV storage restored."
 else

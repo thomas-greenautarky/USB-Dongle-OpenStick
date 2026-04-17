@@ -148,6 +148,65 @@ cd flash && bash flash-uz801.sh --restore ../backup/stock_uz801_<IMEI>_<date>/
 cd flash && bash restore-dongle.sh ../backup/autosave_<timestamp>/
 ```
 
+## EDL Instabilität & Mitigation
+
+Das Sahara/Firehose Protokoll auf MSM8916 ist **zustandsbehaftet** und
+unverzeihlich bei Fehlern. Die häufigsten Probleme und ihre Ursachen:
+
+### Sahara hat nur ein Hello-Paket
+Nach einem Fehlschlag (Timeout, Loader-Upload abgebrochen, USB-Glitch) bleibt
+der PBL im Error-State. Weitere `edl` Kommandos schlagen mit
+`"Connection already detected, quiting"` oder `"Sahara timeout"` fehl —
+**ohne vollen Power-Cycle ist kein Recovery möglich**.
+
+→ Mitigation: Nach JEDEM Fehler Dongle unplug → 3 s warten → replug.
+Niemals `edl` Kommandos auf demselben USB-Plug wiederholen.
+
+### EDL-Timeout bei zu später Aktion
+Bleibt der Dongle zu lange in EDL ohne Firehose-Upload, triggert der PBL
+einen internen Timeout. Nächster Kontakt schlägt fehl.
+
+→ Mitigation: Zwischen `adb reboot edl` und erstem `edl`-Kommando minimal
+Zeit vergehen lassen. Script macht `edl printgpt` als Erstkontakt sofort nach
+USB-Enumeration.
+
+### USB Power / Kabel / Hub
+Generische Sahara-Probleme bei unsauberer Power-Delivery: Enumeration-Flackern
+bricht den Sahara-Handshake ab.
+
+→ Mitigation: Dongle **direkt** am Host anschließen, kein Hub. Kurzes,
+qualitätsgeprüftes Kabel. Bei wackeligen Verbindungen USB-Port wechseln.
+
+### Hardware-Revisionen
+UZ801 existiert als V1.1, V3.0, V3.2, V3.4.33 mit teils unterschiedlichen
+PBL-Versionen und EDL-Testpunkten. Nicht alle Revisionen verhalten sich gleich.
+
+→ Mitigation: Bei neuen Dongles PCB-Revision prüfen (Aufdruck). Wenn ein
+Dongle wiederholt EDL-Fehler hat obwohl andere funktionieren: wahrscheinlich
+abweichende Hardware-Revision.
+
+### Peek-Loader können eMMC schreiben
+Häufiges Missverständnis: `*_peek.bin` Loader sind keine read-only Variante.
+Der Name bezieht sich auf RAM-peek/poke-Primitiven, nicht auf Storage-Zugriff.
+`edl w partition file` funktioniert mit peek-Loadern.
+
+→ Die "Connection detected"-Fehlermeldung beim Schreiben kommt NICHT vom
+Loader-Typ, sondern vom korrupten Sahara-State (siehe oben).
+
+### lk2nd unterstützt kein `fastboot flash partition`
+Obwohl der Dongle nach dem Flash als Fastboot (`18d1:d00d`) erscheint,
+implementiert lk2nd **kein GPT-flashing**. Ein `fastboot flash rootfs`
+korrumpiert die Partitionstabelle (siehe SIM-WIN-00000016).
+
+→ Mitigation: Alle Flash-Operationen ausschließlich via EDL in einer Session.
+Das Script macht das automatisch (all-EDL approach).
+
+**Quellen:**
+- [bkerler/edl Issues #398, #588, #647](https://github.com/bkerler/edl/issues)
+- [96Boards QDL Docs](https://www.96boards.org/documentation/consumer/guides/qdl.md.html)
+- [u0d7i/uz801 README](https://github.com/u0d7i/uz801)
+- [OpenStick/OpenStick Issue #46, #69, #87](https://github.com/OpenStick/OpenStick/issues)
+
 ## Known Issues & Lessons Learned
 
 ### Reset pin does not work on UZ801
@@ -198,12 +257,20 @@ GPT is generated dynamically — any eMMC size works.
 
 ### Host machine setup (once)
 
+Use the provided script in `USB-Dongle-WIFI-Configurator/setup-host.sh`.
+It creates the NetworkManager profile `dongle-local` that matches **by
+driver** (`rndis_host`) rather than by interface name — this avoids
+matching real USB ethernet adapters on the host.
+
 ```bash
-# Prevent dongle from hijacking host internet
-nmcli connection add type ethernet con-name "dongle-no-route" \
-    match.interface-name "enx*" ipv4.never-default yes ipv4.dns-priority 200 \
-    ipv6.method disabled connection.autoconnect yes connection.autoconnect-priority 100
+sudo bash setup-host.sh
 ```
+
+Key properties of the profile:
+- `match.driver=rndis_host` — only flashed dongles, not real ethernet
+- `ipv4.method=auto` — DHCP works for both Stock Android and Debian dongles
+- `ipv4.never-default=yes` — host's default route is untouched
+- `ipv4.ignore-auto-dns=yes` — host's DNS is untouched
 
 ## File Structure
 
