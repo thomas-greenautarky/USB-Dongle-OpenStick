@@ -36,6 +36,24 @@ services, default files). Provisioner-side TODOs live in
       --simple-connect` and applies bearer IP/GW/DNS manually before
       `netbird up`. Fix in rootfs: retry loop with backoff, wait for
       `modem.generic.state == registered` before attempting connect.
+      - Related: `modem-autoconnect.sh` currently defaults to
+        `APN=internet` at boot, which Vodafone IoT SIMs reject with
+        `ServiceOptionNotSubscribed`. It does read `/etc/default/lte-apn`
+        but that file doesn't exist yet on first boot (Provisioner writes
+        it in Step 4). Fix in rootfs: either bake the real APN into the
+        image, or make the service retry after a delay so it has a chance
+        to pick up `/etc/default/lte-apn` written by the provisioner.
+
+## Operator visibility
+
+- [ ] Add per-write heartbeat ticks to `flash/flash-uz801.sh`. The rootfs
+      write (2–5 min) and the modem-firmware-copy phase emit no output
+      until the write finishes, so the operator can't tell "still running"
+      from "deadlocked". `OpenStick-Provisioner/provision.sh` already has
+      a `run_with_tick` helper that prints `[label] still working... Xs
+      elapsed` every 5s — port the same pattern around the `edl w ...`
+      calls for rootfs and the modem-firmware loop. Keep ticks below ~10
+      lines for a normal run.
 
 ## Nice-to-have
 
