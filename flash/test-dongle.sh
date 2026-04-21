@@ -229,19 +229,38 @@ if echo "$BEARER" | grep -q "connected.*yes"; then
     IP=$(echo "$BEARER" | grep "address:" | head -1 | awk '{print $NF}')
     pass "LTE bearer (IP: $IP)"
 
-    LTE_PING=$(ssh_cmd "ping -c 2 -W 5 8.8.8.8 2>/dev/null")
-    if echo "$LTE_PING" | grep -q "bytes from"; then
-        RTT=$(echo "$LTE_PING" | grep avg | awk -F'/' '{print $5}')
-        pass "LTE ping 8.8.8.8 (${RTT}ms)"
+    # LTE data path reachability — HTTPS probe, NOT raw-IP ping.
+    #
+    # Many IoT APNs (e.g. Vodafone inetd.vodafone.iot with an FQDN-whitelist
+    # ACL) blackhole raw-IP ICMP/TCP; `ping 8.8.8.8` therefore fails on
+    # perfectly-working SIMs (false negative) and `ping google.com` fails
+    # both on DNS (google.com may not be in the ACL) and ICMP. The HTTPS
+    # probe to a whitelisted FQDN simultaneously verifies DNS + TCP + TLS
+    # + cert chain + system clock + ACL allowance — a much better single
+    # health signal for real-world SIMs.
+    #
+    # Default target `ghcr.io` is known-whitelisted on the Greenautarky
+    # Vodafone IoT ACL. Override with LTE_PROBE_URL for other fleets.
+    LTE_PROBE_URL="${LTE_PROBE_URL:-https://ghcr.io/}"
+    LTE_PROBE=$(ssh_cmd "curl -sS --max-time 10 -o /dev/null -w '%{http_code}|%{ssl_verify_result}|%{time_total}' '$LTE_PROBE_URL' 2>&1")
+    HTTP_CODE=$(echo "$LTE_PROBE" | awk -F'|' '{print $1}')
+    SSL_OK=$(echo "$LTE_PROBE"    | awk -F'|' '{print $2}')
+    RTT_S=$(echo "$LTE_PROBE"     | awk -F'|' '{print $3}')
+    if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ] && [ "$SSL_OK" = "0" ]; then
+        RTT_MS=$(awk -v s="$RTT_S" 'BEGIN{printf "%.0f", s*1000}' 2>/dev/null)
+        pass "LTE HTTPS ($LTE_PROBE_URL → HTTP $HTTP_CODE, TLS ok, ${RTT_MS}ms)"
     else
-        fail "LTE ping" "no reply"
+        fail "LTE HTTPS" "$LTE_PROBE_URL unreachable (http=${HTTP_CODE:-none}, tls=${SSL_OK:-?})"
     fi
 
-    DNS=$(ssh_cmd "ping -c 1 -W 5 google.com 2>/dev/null")
-    if echo "$DNS" | grep -q "bytes from"; then
-        pass "DNS resolution (google.com)"
+    # DNS — use a FQDN that's in the carrier ACL (derived from LTE_PROBE_URL).
+    # `google.com` is NOT in the Greenautarky ACL, so looking it up from the
+    # dongle's resolver fails even when DNS itself works fine.
+    DNS_HOST=$(echo "$LTE_PROBE_URL" | awk -F'/' '{print $3}')
+    if ssh_cmd "getent hosts '$DNS_HOST' 2>/dev/null | head -1" | grep -q "$DNS_HOST"; then
+        pass "DNS resolution ($DNS_HOST)"
     else
-        fail "DNS" "not resolving"
+        fail "DNS" "$DNS_HOST not resolving"
     fi
 else
     skip "LTE data" "not connected (run: mmcli -m 0 --simple-connect=\"apn=YOUR_APN\")"
