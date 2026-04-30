@@ -4,6 +4,47 @@ Items tracked here belong to the **rootfs build** (kernel config, baked-in
 services, default files). Provisioner-side TODOs live in
 `OpenStick-Provisioner/TODO.md`.
 
+## Backup completeness (HIGH PRIORITY — found 2026-04-30)
+
+Audit of `backup/stock_uz801_*/` revealed **0 of 30 backups are complete**.
+ALL of them are missing `system.bin` (the Stock Android user filesystem,
+~800 MB). Most also miss `boot.bin`. Without these, we cannot restore
+any unit to factory Stock Android — Path 3 provisioning blocked until
+either a vendor image arrives or we full-dump a fresh untouched UZ801.
+
+- [ ] **Extend `flash-uz801.sh` backup phase to do a FULL eMMC dump.**
+      Current ADB-pull phase only grabs boot-chain + modem-cal because
+      pulling system+userdata via ADB is slow (5-10 min). Switch to
+      EDL-side `edl rl <dir>` after the boot-chain backup — gives us
+      every partition including system.bin and userdata.bin in one
+      sweep. Trade-off: adds ~5 min to provisioning time but provides
+      full reversibility.
+
+- [ ] **Add `flash/verify-backup.sh` (one-shot audit tool)** that takes
+      a backup directory and prints a completeness report. Required
+      files: sbl1, sbl1bak, aboot, abootbak, rpm, rpmbak, tz, tzbak,
+      hyp, hypbak, modem, modemst1, modemst2, fsg, sec, fsc, boot,
+      system, recovery, persist, cache, misc, splash, ssd, pad +
+      device_info.txt with IMEI + firmware version + dump-method.
+      Refuse-to-flash gate: `flash-uz801.sh` should run this on the
+      pre-flash backup dir and abort unless backup verifies complete
+      (or `--accept-incomplete-backup` is passed explicitly).
+
+- [ ] **Re-dump all currently-OpenStick UZ801s** (the 12+ already-flashed
+      units we have today) **before any future flash operation**. Once
+      we re-flash one, its remaining factory data goes — and we cannot
+      restore it to stock without the missing system.bin. So: install
+      a side-channel for "stock-or-not" tracking and do `edl rl`
+      backups on every unit while they are still in some bootable state.
+      For units already on OpenStick: flash-uz801.sh's backup is what
+      we have, accept the irreversibility and move on.
+
+- [ ] **Vendor request to Yiming/Longcheer** for UZ801-V2.3.15.1
+      `system.img` (and matching `boot.img`, both signed). Without
+      these, Path 3 / "Stock-Android-Provisioning" stays theoretical.
+      See [docs/stock-android-restore.md](docs/stock-android-restore.md)
+      for context.
+
 ## Kernel config
 
 - [ ] **Enable `CONFIG_LEDS_TRIGGER_NETDEV`** in the kernel fragment used to
@@ -60,6 +101,19 @@ services, default files). Provisioner-side TODOs live in
 - [ ] Bake the improved `led-status.sh` (netdev-trigger-aware) into the
       rootfs directly, so fresh flashes have it even before the
       Provisioner gets to run.
+
+- [ ] LED colour semantics tied to connection *quality*, not just the
+      link flag:
+      - `green:wlan` (or a dedicated status LED) → solid green **only
+        when** modem is `connected`, a bearer is up, default route is
+        via wwan0, AND signal-quality is >= a threshold (e.g. >= 50 %).
+      - red / amber when modem registered but signal poor or bearer
+        flapping.
+      - red when modem not registered at all (parked SIM, no service).
+      A simple state machine fed by `mmcli -m 0 -K` every 5s would do
+      the job. Today's led-lte-watcher.service only uses the link flag
+      so a poor-signal-but-still-connected state looks the same as a
+      great connection.
 - [ ] Document the fact that UZ801 v3.0 has no RTC battery in README —
       users will hit cert-not-yet-valid on any HTTPS call until first
       NTP sync. Provisioner's time push is a bandaid; real fix is
