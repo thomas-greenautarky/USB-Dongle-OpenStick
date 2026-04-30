@@ -4,6 +4,46 @@ Items tracked here belong to the **rootfs build** (kernel config, baked-in
 services, default files). Provisioner-side TODOs live in
 `OpenStick-Provisioner/TODO.md`.
 
+## Modem firmware sync — root cause + long-term fix (2026-04-30)
+
+While trying to recover SIM-WIN-14 with a Telekom test SIM, ModemManager
+stayed at `state: disabled` with `QMI protocol error (52): DeviceNotReady`
+even though `remoteproc0: remote processor 4080000.remoteproc is now up`
+in dmesg. Root cause: **modem firmware version mismatch between the
+rootfs and the eMMC modem partition**.
+
+- OpenStick `rootfs.raw` ships with `/lib/firmware/modem.b00` of 980 B
+- `flash/files/uz801/modem_firmware/modem.b00` is 916 B (different build)
+- `flash-uz801.sh` writes the 916-B version to the modem PARTITION but
+  when `--skip-backup` is used, never overwrites `/lib/firmware/` →
+  kernel loads the 980-B file from rootfs but the partition has 916-B
+  files → DSP boots but QMI handshake fails
+
+**Hot-fix done**: applied reference-firmware fallback to the post-boot
+`/lib/firmware/` copy (commit referenced below). Now `--skip-backup` runs
+also push reference firmware to `/lib/firmware/` so the two stay in sync.
+
+**Long-term TODO** (better than hot-fix):
+
+- [ ] **Rebuild OpenStick rootfs.raw with correct `/lib/firmware/modem.*`
+      baked in.** The rootfs comes from `OpenStick-Builder` (submodule).
+      Update its `files/lib/firmware/` (or whichever overlay) to use the
+      same set as `flash/files/uz801/modem_firmware/` so a fresh boot
+      from rootfs alone has compatible firmware. Then the runtime scp
+      becomes a belt-and-suspenders extra rather than a critical step.
+
+- [ ] **Add a sanity check at start of provisioning**: if
+      `/lib/firmware/modem.b00` size mismatches the size that should be
+      there for this rootfs build, warn loudly. Even better: ship a
+      `lib/firmware/modem.expected.sha256` file in the rootfs and have
+      `provision.sh` verify on each run.
+
+- [ ] **Document the failure mode in `docs/dongle-compatibility.md`**:
+      "If `mmcli -m 0 --enable` returns DeviceNotReady right after a
+      flash, check `ls -la /lib/firmware/modem.b00` against
+      `flash/files/uz801/modem_firmware/modem.b00` — sizes must match.
+      If not, scp the firmware files over and bounce remoteproc."
+
 ## Backup completeness (HIGH PRIORITY — found 2026-04-30)
 
 Audit of `backup/stock_uz801_*/` revealed **0 of 30 backups are complete**.

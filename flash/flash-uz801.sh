@@ -606,14 +606,35 @@ if $BOOTED; then
         sleep 5
     done
 
-    # Copy modem firmware to /lib/firmware/
+    # Copy modem firmware to /lib/firmware/.
+    #
+    # Bug history (fixed 2026-04-30, found via SIM-WIN-14 recovery):
+    # The OpenStick rootfs.raw ships with a default /lib/firmware/modem.b00
+    # of 980 bytes. The reference firmware in flash/files/uz801/modem_firmware/
+    # has a 916-byte modem.b00 — DIFFERENT version. flash-uz801.sh writes
+    # the 916-byte version to the modem PARTITION but, when --skip-backup
+    # is used, used to leave the rootfs's 980-byte version in /lib/firmware/.
+    # Result: kernel loads a different firmware version than the eMMC modem
+    # partition has → DSP boots but QMI fails with "DeviceNotReady" (QMI
+    # protocol error 52). Modem stays disabled, no LTE.
+    #
+    # Fix: apply the same reference-firmware fallback we use at line ~527
+    # for the modem partition. The /lib/firmware/ copy MUST match what's
+    # on the modem partition, otherwise mismatch breaks the modem.
     MODEM_FW_DIR="${BACKUP_DIR:-}/modem_firmware"
+    if [ ! -d "$MODEM_FW_DIR" ] || [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -eq 0 ]; then
+        REFERENCE_FW="$FILES_DIR/modem_firmware"
+        if [ -d "$REFERENCE_FW" ] && [ "$(ls "$REFERENCE_FW" 2>/dev/null | wc -l)" -gt 0 ]; then
+            warn "  No ADB modem backup for /lib/firmware/ copy — using reference firmware"
+            MODEM_FW_DIR="$REFERENCE_FW"
+        fi
+    fi
     if [ -d "$MODEM_FW_DIR" ] && [ "$(ls "$MODEM_FW_DIR" 2>/dev/null | wc -l)" -gt 0 ]; then
         log "Copying modem firmware to dongle..."
         for fw in "$MODEM_FW_DIR"/*; do
             [ -f "$fw" ] && SSHPASS="$SSH_PASS_FW" sshpass -e scp $SSH_OPTS_FW "$fw" "root@$DONGLE_SSH_IP:/lib/firmware/" 2>/dev/null
         done
-        log "  Copied $(ls "$MODEM_FW_DIR" -1 2>/dev/null | wc -l) firmware files"
+        log "  Copied $(ls "$MODEM_FW_DIR" -1 2>/dev/null | wc -l) firmware files (must match modem partition contents)"
 
         log "Copying NV storage to /boot..."
         SSHPASS="$SSH_PASS_FW" sshpass -e ssh $SSH_OPTS_FW "root@$DONGLE_SSH_IP" "
