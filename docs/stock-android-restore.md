@@ -173,6 +173,32 @@ Recommended: defer Path 3 implementation until we have a UZ801-matching
 `system.img`. The eMMC-side tooling (`restore-stock-android.sh`) is
 ready and works correctly — we just need the right user partition.
 
+### Cross-version mixing doesn't help (verified 2026-04-30)
+
+Tried combining V2.3.15.1 boot/recovery/persist/misc/splash partitions
+(from `backup/stock_uz801_<other-IMEI>_20260415/`) with the universal
+Nov 2025 system.bin on top of SIM-WIN-14's own stock sbl1+aboot.
+Result: `aboot` boots and rejects the V2.3.15.1 boot.bin (signature
+check) → falls into stock-fastboot mode (`Resuming boot OKAY` from
+`fastboot continue` but immediate fall-back).
+
+So aboot enforces a per-device or per-build signature on the boot
+partition. Mix-and-match cross-version restores are not viable on
+UZ801 — we either need the **exact** signed boot.img for the
+installed sbl1+aboot, or we don't get Android booting.
+
+Combined with the WindowManager crash from the only system.img we have
+(display-equipped Nov 2025), the gap is: **vendor needs to supply both
+boot.img and system.img for headless UZ801-V2.3.15.1**. Half measures
+keep failing in different ways.
+
+| Tested combo | Boot result |
+|---|---|
+| Universal Nov 2025 boot + universal Nov 2025 system | Android boots, system_server crash-loops on WindowManager |
+| V2.3.15.1 boot + universal system + this-device's aboot | aboot rejects boot.bin, falls to fastboot |
+| OpenStick boot + rootfs (via flash-uz801.sh) | Falls to PBL EDL — sbl1 verification (probable DDR/SBC mismatch on V2.3.15.1 hardware) |
+| Stock sbl1+aboot only, no boot | Falls to PBL EDL (no boot to chain to) |
+
 ## Path 3 — what's possible now (provisioning via Stock Android)
 
 With Stock Android booted on a UZ801, configuration is via **ADB shell** —
