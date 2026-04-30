@@ -131,6 +131,48 @@ adb shell getprop ro.build.fingerprint
 # expected: qcom/msm8916_32_512/msm8916_32_512:4.4.4/KTU84P/...
 ```
 
+## Caveat: universal Stock-Android image is incomplete for headless UZ801
+
+After SIM-WIN-14 booted Stock Android, we observed `system_server`
+crash-looping with:
+```
+*** FATAL EXCEPTION IN SYSTEM PROCESS: WindowManager
+```
+PIDs incrementing every ~2 seconds (5555 → 5837 → 6108 → ...). Only 11
+out of ~100+ standard services come up; `iphonesubinfo`, `package`, and
+all telephony services are absent. APN ContentProvider throws
+NullPointerException because telephony framework never finished init.
+
+Why: the universal Stock-Android image in `backup/partitions/system.bin`
+was apparently dumped from a **display-equipped MSM8916 device**, not
+the headless UZ801. WindowManager refuses to come up without a working
+framebuffer / hardware composer; UZ801 has no display so this dies
+immediately, and system_server's crash takes the whole Android userspace
+down with it on every restart.
+
+**Implications:**
+- ADB works (init starts adbd before system_server)
+- The boot chain (sbl1/aboot/kernel) is correct for UZ801
+- But Android userspace can't run normally → no SettingsProvider, no
+  TelephonyProvider, no `settings put` / `content insert` for APN/WiFi
+- Stock Android **as-is** is therefore not a viable provisioning target
+  on UZ801 with our current backup set
+
+**To unblock Path 3 we'd need one of:**
+1. A `system.img` built specifically for UZ801 (no-display) — would
+   either need to be sourced from the OEM/vendor or built from AOSP
+   with the UZ801 BoardConfig (no Surfaceflinger, no display HALs)
+2. Or accept that Path 3 only configures via direct `/data/system/users/0/`
+   file writes (Settings.db SQLite), bypassing the Android framework
+   entirely. Possible but messy and version-fragile.
+3. Or pick a different "stock"-firmware for UZ801 — e.g. a vendor-supplied
+   modem-only firmware (like the ZTE "4G Modem" stack we already use for
+   ARROW) which doesn't pull in Android UI.
+
+Recommended: defer Path 3 implementation until we have a UZ801-matching
+`system.img`. The eMMC-side tooling (`restore-stock-android.sh`) is
+ready and works correctly — we just need the right user partition.
+
 ## Path 3 — what's possible now (provisioning via Stock Android)
 
 With Stock Android booted on a UZ801, configuration is via **ADB shell** —
